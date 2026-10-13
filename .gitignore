@@ -1,0 +1,9 @@
+tmp/
+build/
+sources/
+AGENTS.md
+*.o
+*.exe
+*.stackdump
+core
+core.*
