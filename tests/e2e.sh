@@ -101,6 +101,7 @@ for server in server_single server_multi; do
     expect_exit 1 client .. "$out"
     expect_exit 1 client a/b "$out"
     expect_exit 1 client "" "$out"
+    expect_exit 1 client Cane "$out" unexpected_extra_argument
 
     # Several clients at once, each into its own output directory.
     pids=

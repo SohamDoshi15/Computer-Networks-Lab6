@@ -8,24 +8,34 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
-#define DEFAULT_TIMEOUT_SECONDS 30u
+/* Bounds each blocking send and receive so a stalled server cannot hang the client. */
+#define TIMEOUT_SECONDS 30u
+
+static double seconds_since(const struct timespec *start)
+{
+    struct timespec now;
+
+    (void)clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)(now.tv_sec - start->tv_sec) + (double)(now.tv_nsec - start->tv_nsec) / 1e9;
+}
 
 int main(int argc, char **argv)
 {
     struct cn_client_report report;
     uint8_t transfer_id[CN_TRANSFER_ID_SIZE];
-    uint32_t timeout_seconds = DEFAULT_TIMEOUT_SECONDS;
+    struct timespec start;
     enum cn_client_status status;
+    double elapsed;
     uint16_t port;
     int socket_fd;
 
-    if ((argc != 5 && argc != 6) || cn_parse_port(argv[2], &port) != 0 ||
-        argv[4][0] == '\0' ||
-        (argc == 6 && cn_parse_positive_u32(argv[5], &timeout_seconds) != 0)) {
-        fprintf(stderr, "Usage: %s <server_host> <port> <topic> <output_dir> [timeout_seconds]\n",
-                argv[0]);
+    /* Trailing arguments stay free for case-specific settings such as the
+       Enhanced Case 2 connection count. */
+    if (argc != 5 || cn_parse_port(argv[2], &port) != 0 || argv[4][0] == '\0') {
+        fprintf(stderr, "Usage: %s <server_ip> <server_port> <topic> <output_dir>\n", argv[0]);
         return CN_CLIENT_USAGE;
     }
     /* Reject a bad topic before touching the network. */
@@ -41,20 +51,24 @@ int main(int argc, char **argv)
         perror("client: cannot generate a transfer ID");
         return CN_CLIENT_LOCAL_IO;
     }
-    socket_fd = cn_client_connect(argv[1], port, timeout_seconds, &report);
+    /* Completion time runs from the first request until every file verifies. */
+    (void)clock_gettime(CLOCK_MONOTONIC, &start);
+    socket_fd = cn_client_connect(argv[1], port, TIMEOUT_SECONDS, &report);
     if (socket_fd < 0) {
         fprintf(stderr, "client: %s\n", report.message);
         return report.status;
     }
 
     status = cn_client_fetch_topic(socket_fd, transfer_id, argv[3], argv[4], stdout, &report);
+    elapsed = seconds_since(&start);
     close(socket_fd);
     if (status != CN_CLIENT_OK) {
         fflush(stdout);
         fprintf(stderr, "client: %s\n", report.message);
         return status;
     }
-    printf("Received %" PRIu32 " file(s), %" PRIu64 " byte(s) into %s/%s\n",
-           report.files_completed, report.bytes_completed, argv[4], argv[3]);
+    printf("Received %" PRIu32 " file(s), %" PRIu64 " verified byte(s) into %s/%s in %.3f s "
+           "(%.2f MB/s)\n", report.files_completed, report.bytes_completed, argv[4], argv[3],
+           elapsed, elapsed > 0.0 ? (double)report.bytes_completed / elapsed / 1e6 : 0.0);
     return EXIT_SUCCESS;
 }

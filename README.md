@@ -32,15 +32,18 @@ make e2e      # real client against both real servers over TCP
 ## Running
 
 A dataset root holds one directory per topic; regular files directly inside a
-topic directory are served.
+topic directory are served. Topic names are the directory names exactly as they
+appear on disk (the Animals-10 dataset uses lowercase: `cane`, `gatto`, ...).
 
 ```sh
-./build/server_multi 9000 tests/data
-./build/client 127.0.0.1 9000 Cane downloads        # writes downloads/Cane/
+./build/server_multi 9000 /path/to/dataset/raw-img
+./build/client 127.0.0.1 9000 cane downloads        # writes downloads/cane/
 ```
 
-Client usage: `client <server_host> <port> <topic> <output_dir> [timeout_seconds]`.
-The timeout (default 30 s) bounds each blocking send and receive.
+Client usage: `client <server_ip> <server_port> <topic> <output_dir>`, the
+interface required for every case. On success it prints the number of verified
+files and bytes, the completion time from first request to last verified file,
+and the throughput. Each blocking send and receive times out after 30 s.
 
 | Exit | Meaning |
 |---:|---|
