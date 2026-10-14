@@ -25,7 +25,7 @@ TESTS := $(BUILD_DIR)/test_common $(BUILD_DIR)/test_client
 LINK_WITH_CRYPTO = $(CC) $(CPPFLAGS) $(CRYPTO_CFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ \
 	$(filter %.c,$^) $(CRYPTO_LIBS) $(LDLIBS)
 
-.PHONY: all test e2e clean
+.PHONY: all test e2e submission clean
 
 all: $(PROGRAMS) $(TESTS)
 
@@ -53,6 +53,10 @@ test: $(TESTS)
 
 e2e: $(PROGRAMS)
 	sh tests/e2e.sh
+
+# The graded layout (design document section 8), generated under build/.
+submission:
+	sh scripts/package_submission.sh $(BUILD_DIR)/FinalSubmission_Group_064_091
 
 clean:
 	rm -rf $(BUILD_DIR)

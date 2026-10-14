@@ -14,6 +14,7 @@ server/        Part 1 servers: single-threaded and thread-per-client
 client/        Client library used by every case, plus the client program
 docs/          Protocol contract and integration rules
 tests/         Unit tests, fault-injection tests, end-to-end script, sample topics
+scripts/       Packaging of the graded submission layout
 sources/       Read-only assignment and design references (not edited)
 ```
 
@@ -27,7 +28,14 @@ it with `brew install openssl`).
 make          # build/server_single, build/server_multi, build/client, test binaries
 make test     # protocol unit tests and client fault-injection tests
 make e2e      # real client against both real servers over TCP
+make submission  # build/FinalSubmission_Group_064_091/, one folder per case
 ```
+
+Development happens in this single shared tree. `make submission` generates the
+graded layout from the design document: each case folder (for now
+`Part1/single_threaded` and `Part1/multi_threaded`) is self-contained, and
+`make` inside it creates exactly `./server` and `./client`. Part 2 cases are
+added with one `add_case` line in `scripts/package_submission.sh`.
 
 ## Running
 
