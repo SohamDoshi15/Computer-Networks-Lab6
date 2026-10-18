@@ -2,6 +2,7 @@
 #define _DEFAULT_SOURCE
 
 #include "server_common.h"
+#include "fault_injection.h"
 
 #include "../common/protocol.h"
 #include "../common/serialization.h"
@@ -15,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define DATA_CHUNK_SIZE (64u * 1024u)
@@ -236,7 +238,8 @@ static int send_manifest(int fd, const uint8_t transfer_id[16],
 }
 
 static int send_file(int fd, int topic_fd, const uint8_t transfer_id[16],
-                     uint32_t index, const struct part1_file *file)
+                     uint32_t index, const struct part1_file *file,
+                     struct cn_fault_injector *fault, struct cn_serve_stats *stats)
 {
     uint8_t start_payload[4 + 4 + CN_MAX_FILENAME_SIZE + 8 + CN_SHA256_SIZE];
     struct cn_writer writer;
@@ -278,7 +281,24 @@ static int send_file(int fd, int topic_fd, const uint8_t transfer_id[16],
             goto done;
         }
         {
-            int rc = send_payload(fd, CN_MSG_DATA, transfer_id, data_payload, data_writer.offset);
+            int rc;
+            if (fault != NULL) {
+                struct cn_frame_header data_header;
+                uint64_t before = fault->data_bytes_sent;
+                memset(&data_header, 0, sizeof(data_header));
+                data_header.version = CN_PROTOCOL_VERSION;
+                data_header.message_type = CN_MSG_DATA;
+                data_header.payload_length = data_writer.offset;
+                memcpy(data_header.transfer_id, transfer_id, CN_TRANSFER_ID_SIZE);
+                rc = cn_fault_send_data_frame(fd, fault, &data_header, data_payload, (size_t)got);
+                if (stats != NULL) {
+                    stats->data_bytes_sent += fault->data_bytes_sent - before;
+                    stats->fault_fired = fault->fired;
+                }
+            } else {
+                rc = send_payload(fd, CN_MSG_DATA, transfer_id, data_payload, data_writer.offset);
+                if (rc == CN_PROTOCOL_OK && stats != NULL) stats->data_bytes_sent += (uint64_t)got;
+            }
             free(data_payload);
             if (rc != CN_PROTOCOL_OK) goto done;
         }
@@ -315,6 +335,7 @@ static int send_file(int fd, int topic_fd, const uint8_t transfer_id[16],
         }
         free(ack_payload);
     }
+    if (stats != NULL) stats->files_acked += 1;
     result = 0;
 
 done:
@@ -323,6 +344,20 @@ done:
 }
 
 int part1_serve_client(int client_fd, const char *root)
+{
+    return part1_serve_client_ex(client_fd, root, NULL, NULL);
+}
+
+static double elapsed_since(const struct timespec *start)
+{
+    struct timespec now;
+    (void)clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)(now.tv_sec - start->tv_sec) + (double)(now.tv_nsec - start->tv_nsec) / 1e9;
+}
+
+int part1_serve_client_ex(int client_fd, const char *root,
+                          struct cn_fault_injector *fault,
+                          struct cn_serve_stats *stats)
 {
     struct cn_frame_header request;
     uint8_t *request_payload = NULL;
@@ -335,11 +370,19 @@ int part1_serve_client(int client_fd, const char *root)
     uint8_t complete_payload[12];
     struct cn_writer complete_writer;
     int result = -1;
+    struct cn_io_counters *previous_counters = cn_io_get_counters();
+    struct timespec start = {0, 0};
 
     memset(transfer_id, 0, sizeof(transfer_id));
     memset(&manifest, 0, sizeof(manifest));
+    if (stats != NULL) {
+        memset(stats, 0, sizeof(*stats));
+        cn_io_set_counters(&stats->io);
+    }
+    (void)cn_socket_set_nodelay(client_fd);
 
     if (cn_recv_frame(client_fd, &request, &request_payload) != CN_PROTOCOL_OK) goto done;
+    (void)clock_gettime(CLOCK_MONOTONIC, &start);
     if (request.message_type != CN_MSG_GET) {
         (void)part1_send_error(client_fd, request.transfer_id, CN_ERR_INVALID_REQUEST, "expected GET");
         goto done;
@@ -351,6 +394,7 @@ int part1_serve_client(int client_fd, const char *root)
         goto done;
     }
     memcpy(transfer_id, request.transfer_id, CN_TRANSFER_ID_SIZE);
+    if (stats != NULL) memcpy(stats->topic, topic, sizeof(stats->topic));
 
     if (part1_build_manifest(root, topic, &manifest) != 0) {
         uint32_t code = (errno == ENOENT || errno == ENOTDIR) ? CN_ERR_UNKNOWN_TOPIC : CN_ERR_FILE_IO;
@@ -358,6 +402,12 @@ int part1_serve_client(int client_fd, const char *root)
         goto done;
     }
     if (send_manifest(client_fd, transfer_id, &manifest) != 0) goto done;
+    if (stats != NULL) {
+        stats->file_count = (uint32_t)manifest.count;
+        stats->data_bytes_planned = manifest.total_bytes;
+    }
+    /* Connection-mode fault decision: made once, now that the volume is known. */
+    if (fault != NULL) (void)cn_fault_plan(fault, manifest.total_bytes);
 
     root_fd = open(root, O_RDONLY | O_CLOEXEC | O_DIRECTORY);
     if (root_fd < 0) goto done;
@@ -365,7 +415,8 @@ int part1_serve_client(int client_fd, const char *root)
     if (topic_fd < 0) goto done;
 
     for (i = 0; i < manifest.count; ++i) {
-        if (send_file(client_fd, topic_fd, transfer_id, (uint32_t)i, &manifest.files[i]) != 0) goto done;
+        if (send_file(client_fd, topic_fd, transfer_id, (uint32_t)i, &manifest.files[i],
+                      fault, stats) != 0) goto done;
     }
 
     cn_writer_init(&complete_writer, complete_payload, sizeof(complete_payload));
@@ -373,9 +424,14 @@ int part1_serve_client(int client_fd, const char *root)
         cn_writer_put_u64(&complete_writer, manifest.total_bytes) != 0 ||
         send_payload(client_fd, CN_MSG_COMPLETE, transfer_id, complete_payload,
                      complete_writer.offset) != CN_PROTOCOL_OK) goto done;
+    if (stats != NULL) stats->completed = 1;
     result = 0;
 
 done:
+    if (stats != NULL) {
+        if (stats->topic[0] != '\0') stats->seconds = elapsed_since(&start);
+        cn_io_set_counters(previous_counters);
+    }
     free(request_payload);
     if (topic_fd >= 0) close(topic_fd);
     if (root_fd >= 0) close(root_fd);

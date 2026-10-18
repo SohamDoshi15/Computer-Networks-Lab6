@@ -503,6 +503,7 @@ int cn_client_connect(const char *host, uint16_t port, unsigned timeout_seconds,
              (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0 &&
               setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0)) &&
             connect(socket_fd, address->ai_addr, address->ai_addrlen) == 0) {
+            (void)cn_socket_set_nodelay(socket_fd);
             break;
         }
         saved_errno = errno;
@@ -675,6 +676,7 @@ static enum cn_client_status write_data(struct transfer *t, const struct cn_mani
                     "%s: server sent more than the declared %" PRIu64 " bytes",
                     entry->name, entry->size);
     }
+    t->report->data_bytes_received += data_length;
     if (cn_file_sink_write(&t->sink, offset, payload + reader.offset, data_length) != 0) {
         return fail(t->report, CN_CLIENT_LOCAL_IO, "cannot write %s: %s", entry->name,
                     strerror(errno));

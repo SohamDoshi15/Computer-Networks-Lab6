@@ -23,6 +23,7 @@ struct cn_client_report {
     uint32_t server_error_code;
     uint32_t files_completed;
     uint64_t bytes_completed;
+    uint64_t data_bytes_received; /* file bytes in every complete DATA frame, kept or not */
     char message[512];
 };
 

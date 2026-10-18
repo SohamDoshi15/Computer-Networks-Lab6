@@ -10,11 +10,12 @@ from the single top-level `Makefile`.
 
 ```text
 common/        Shared protocol, serialization, socket I/O, and CLI helpers
-server/        Part 1 servers: single-threaded and thread-per-client
+server/        Part 1 servers, Part 2 Case 1 server, fault injection
 client/        Client library used by every case, plus the client program
 docs/          Protocol contract and integration rules
 tests/         Unit tests, fault-injection tests, end-to-end script, sample topics
-scripts/       Packaging of the graded submission layout
+scripts/       Packaging, Case 1 experiment, summary and plotting scripts
+Results/       Raw CSV logs and graphs from the experiments
 sources/       Read-only assignment and design references (not edited)
 ```
 
@@ -28,6 +29,7 @@ it with `brew install openssl`).
 make          # build/server_single, build/server_multi, build/client, test binaries
 make test     # protocol unit tests and client fault-injection tests
 make e2e      # real client against both real servers over TCP
+make e2e_case1   # Case 1: fault injection, restarts, byte accounting over TCP
 make submission  # build/FinalSubmission_Group_064_091/, one folder per case
 ```
 
@@ -64,6 +66,52 @@ and the throughput. Each blocking send and receive times out after 30 s.
 | 6 | local file system failure |
 
 Codes 3 to 5 are the ones a retrying case (Part 2 Case 1) should retry.
+
+## Part 2 Case 1: fault injection and restart
+
+```sh
+./build/server_case1 9000 /path/to/dataset/raw-img 0.3   # p = 0.3
+./build/client_case1 127.0.0.1 9000 cane downloads
+```
+
+The server makes one failure decision per connection, right after it sends the
+MANIFEST: with probability p it cuts the connection at a file-data byte drawn
+uniformly from the bytes it is about to send. The cut lands inside a DATA frame,
+so the client sees a truncated frame. The client keeps nothing from a failed
+attempt. It reconnects, sends a fresh `GET` with a new transfer ID, and
+downloads the whole topic again. Optional environment variables:
+
+| Variable | Side | Default | Meaning |
+|---|---|---|---|
+| `CN_FAULT_MODE` | server | `connection` | `chunk`: an independent decision before every 64 KiB DATA frame |
+| `CN_FAULT_ACTION` | server | `close` | `reset`: abortive close (TCP RST) instead of FIN |
+| `CN_FAULT_SEED` | server | clock | fixed seed, so the same decisions repeat |
+| `CN_SERVER_METRICS_CSV` | server | off | one CSV row per finished connection |
+| `CN_MAX_ATTEMPTS` | client | 100 | stop after this many attempts (0 = no limit) |
+| `CN_RETRY_DELAY_MS` | client | 50 | pause before reconnecting |
+| `CN_TIMEOUT_SECONDS` | client | 30 | per send/receive timeout |
+| `CN_CONNECT_GIVEUP_SECONDS` | client | 30 | keep retrying refused/unreachable connects this long |
+| `CN_METRICS_CSV` | client | off | append the run's metrics to a CSV file |
+| `CN_QUIET` | client | 0 | `1` hides the per-file lines |
+
+Every client run ends with a `METRICS` line: attempts, transmitted bytes,
+useful bytes, redundant bytes, overhead, completion time, goodput and raw
+throughput. `docs/FAULT_INJECTION_CASE1.md` defines these metrics and analyzes
+the results. To repeat the experiment:
+
+```sh
+sh scripts/run_case1_experiments.sh /path/to/raw-img scoiattolo 20 Results
+python3 scripts/summarize_case1.py Results
+python3 scripts/plot_case1.py Results /path/to/raw-img/scoiattolo   # needs matplotlib
+```
+
+For the server plus two client computers setup, follow
+`docs/THREE_COMPUTER_RUN.md`; `scripts/case1_client_node.sh` runs the clients
+on each client computer.
+
+Every connection socket uses `TCP_NODELAY`. Without it, Linux stalls each file
+about 40 ms (Nagle's algorithm meets delayed ACK) whenever client and server
+are on different hosts.
 
 ## Client file integrity
 

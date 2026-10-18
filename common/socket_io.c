@@ -1,12 +1,33 @@
 #include "socket_io.h"
 
 #include <errno.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
+
+static _Thread_local struct cn_io_counters *thread_counters = NULL;
+
+void cn_io_set_counters(struct cn_io_counters *counters)
+{
+    thread_counters = counters;
+}
+
+struct cn_io_counters *cn_io_get_counters(void)
+{
+    return thread_counters;
+}
+
+int cn_socket_set_nodelay(int socket_fd)
+{
+    const int on = 1;
+
+    return setsockopt(socket_fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
+}
 
 int cn_send_all(int socket_fd, const void *buffer, size_t length)
 {
@@ -23,6 +44,9 @@ int cn_send_all(int socket_fd, const void *buffer, size_t length)
                                     MSG_NOSIGNAL);
         if (result > 0) {
             sent += (size_t)result;
+            if (thread_counters != NULL) {
+                thread_counters->bytes_sent += (uint64_t)result;
+            }
             continue;
         }
         if (result < 0 && errno == EINTR) {
@@ -51,6 +75,9 @@ int cn_recv_all(int socket_fd, void *buffer, size_t length)
                                     length - received, 0);
         if (result > 0) {
             received += (size_t)result;
+            if (thread_counters != NULL) {
+                thread_counters->bytes_received += (uint64_t)result;
+            }
             continue;
         }
         if (result < 0 && errno == EINTR) {
