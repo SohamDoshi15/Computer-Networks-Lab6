@@ -5,6 +5,11 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include "../common/protocol.h"
+#include "../common/socket_io.h"
+
+struct cn_fault_injector;
+
 struct part1_file {
     char *name;
     uint64_t size;
@@ -25,5 +30,26 @@ void part1_free_manifest(struct part1_manifest *manifest);
 int part1_send_error(int client_fd, const uint8_t transfer_id[16],
                      uint32_t code, const char *message);
 int part1_serve_client(int client_fd, const char *root);
+
+/* What one connection did, filled in by part1_serve_client_ex(). */
+struct cn_serve_stats {
+    char topic[CN_MAX_TOPIC_SIZE + 1];
+    uint32_t file_count;          /* files in the manifest */
+    uint32_t files_acked;         /* files the client verified and acknowledged */
+    uint64_t data_bytes_planned;  /* file bytes this connection should carry */
+    uint64_t data_bytes_sent;     /* file bytes actually put on the socket */
+    struct cn_io_counters io;     /* every byte sent and received, headers included */
+    double seconds;               /* request received until the connection ended */
+    int fault_fired;
+    int completed;                /* COMPLETE was sent */
+};
+
+/*
+ * part1_serve_client() with optional fault injection and statistics; either
+ * pointer may be NULL. The Part 1 servers pass NULL for both.
+ */
+int part1_serve_client_ex(int client_fd, const char *root,
+                          struct cn_fault_injector *fault,
+                          struct cn_serve_stats *stats);
 
 #endif
