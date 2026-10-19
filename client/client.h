@@ -68,6 +68,9 @@ char *cn_part_name(const char *name);
 int cn_client_open_topic_dir(const char *output_dir, const char *topic);
 int cn_file_sink_open(struct cn_file_sink *sink, int dir_fd,
                       const struct cn_manifest_entry *entry);
+int cn_file_sink_open_resume(struct cn_file_sink *sink, int dir_fd,
+                             const struct cn_manifest_entry *entry,
+                             uint64_t resume_offset);
 int cn_file_sink_write(struct cn_file_sink *sink, uint64_t offset,
                        const uint8_t *data, size_t length);
 enum cn_client_status cn_file_sink_commit(struct cn_file_sink *sink);

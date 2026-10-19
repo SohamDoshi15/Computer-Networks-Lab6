@@ -12,9 +12,9 @@ add_case() {
     # Sources live under src/ so they cannot collide with the server and client executables.
     mkdir -p "$dir/src/common" "$dir/src/client" "$dir/src/server"
     cp common/*.c common/*.h "$dir/src/common/"
-    cp client/client.c client/client.h "$client_main" "$dir/src/client/"
+    cp client/client.c client/client.h client/checkpoint.c client/checkpoint.h "$client_main" "$dir/src/client/"
     cp server/server_common.c server/server_common.h server/fault_injection.c \
-        server/fault_injection.h "$2" "$dir/src/server/"
+        server/fault_injection.h server/session_store.c server/session_store.h "$2" "$dir/src/server/"
     sed -e "s|@SERVER_MAIN@|src/server/$(basename "$2")|" \
         -e "s|@CLIENT_MAIN@|src/client/$(basename "$client_main")|" >"$dir/Makefile" <<'EOF'
 CC ?= cc
@@ -32,18 +32,19 @@ ifeq ($(shell uname -s),Darwin)
 CPPFLAGS += -D_DARWIN_C_SOURCE
 endif
 
-COMMON_SOURCES := src/common/protocol.c src/common/serialization.c src/common/socket_io.c \
-	src/common/cli.c
+COMMON_SOURCES := $(wildcard src/common/*.c)
+SERVER_SOURCES := src/server/server_common.c src/server/fault_injection.c src/server/session_store.c $(COMMON_SOURCES)
+CLIENT_SOURCES := src/client/client.c src/client/checkpoint.c $(COMMON_SOURCES)
 HEADERS := $(wildcard src/common/*.h src/client/*.h src/server/*.h)
 
 .PHONY: all clean
 
 all: server client
 
-server: @SERVER_MAIN@ src/server/server_common.c src/server/fault_injection.c $(COMMON_SOURCES) $(HEADERS)
+server: @SERVER_MAIN@ $(SERVER_SOURCES) $(HEADERS)
 	$(CC) $(CPPFLAGS) $(CRYPTO_CFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) $(CRYPTO_LIBS) $(LDLIBS)
 
-client: @CLIENT_MAIN@ src/client/client.c $(COMMON_SOURCES) $(HEADERS)
+client: @CLIENT_MAIN@ $(CLIENT_SOURCES) $(HEADERS)
 	$(CC) $(CPPFLAGS) $(CRYPTO_CFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) $(CRYPTO_LIBS) $(LDLIBS)
 
 clean:
@@ -56,7 +57,8 @@ mkdir -p "$OUT"
 add_case Part1/single_threaded server/server_single.c
 add_case Part1/multi_threaded server/server_multi.c
 add_case Part2_Case1 server/server_case1.c client/main_case1.c
-# Part2_Case2 and Part2_Case2_Enhanced are added here as they land.
+add_case Part2_Case2 server/server_case2.c client/main_case2.c
+# Part2_Case2_Enhanced is added here as it lands.
 
 cat >"$OUT/README.md" <<'EOF'
 # IT305 Socket Programming Project - Groups 064 and 091
@@ -65,11 +67,12 @@ Each case folder is self-contained; `make` inside it creates exactly two
 executables, `server` and `client`. Requirements: a C11 compiler, pthreads,
 and OpenSSL's libcrypto.
 
-| Folder | Server |
-|---|---|
-| `Part1/single_threaded` | sequential: completes one request before the next |
-| `Part1/multi_threaded` | one worker thread per client |
-| `Part2_Case1` | one thread per client, fault injection, client restarts from the beginning |
+| Folder | Server | Description |
+|---|---|---|
+| `Part1/single_threaded` | sequential | completes one request before the next |
+| `Part1/multi_threaded` | concurrent | one worker thread per client |
+| `Part2_Case1` | concurrent + faults | no session state; client restarts from the beginning |
+| `Part2_Case2` | concurrent + faults | session store + durable checkpoints; client resumes |
 
 ```sh
 cd Part1/multi_threaded && make
@@ -100,13 +103,15 @@ or integrity failure and requests the topic again from the beginning (new
 connection, new transfer ID, nothing reused). It prints a `METRICS` line with
 the attempts, transmitted, useful and redundant bytes, completion time, and
 throughput; `CN_METRICS_CSV=<file>` appends the same values to a CSV file.
-`CN_MAX_ATTEMPTS` (default 100), `CN_RETRY_DELAY_MS` (default 50),
-`CN_TIMEOUT_SECONDS` (default 30) and `CN_CONNECT_GIVEUP_SECONDS` (default 30)
-tune the retry loop.
 
-The client writes the topic to `<output_dir>/<topic>/`. Every file is written
-to a temporary name and published only after its size and SHA-256 match the
-server's manifest.
+## Part 2 Case 2 client
+
+With session management, the client persists progress to a durable atomic checkpoint
+`<output_dir>/<topic>/.checkpoint`. After an interrupted connection, it truncates
+any uncheckpointed tail and sends `RESUME` with its checkpointed state. The server
+validates the session against its in-memory SessionStore and replies `RESUME_OK`,
+streaming only the remaining bytes and reducing duplicate transmission to near zero.
+If the server was restarted or the session expired, the client safely falls back to `GET`.
 
 | Client exit | Meaning |
 |---:|---|

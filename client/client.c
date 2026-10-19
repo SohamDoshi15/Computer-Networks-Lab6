@@ -368,6 +368,42 @@ fail:
     return -1;
 }
 
+int cn_file_sink_open_resume(struct cn_file_sink *sink, int dir_fd,
+                             const struct cn_manifest_entry *entry,
+                             uint64_t resume_offset)
+{
+    int saved_errno;
+
+    *sink = (struct cn_file_sink)CN_FILE_SINK_INIT;
+    sink->dir_fd = dir_fd;
+    sink->entry = entry;
+    sink->temp_name = cn_part_name(entry->name);
+    if (sink->temp_name == NULL) {
+        return -1;
+    }
+    sink->fd = openat(dir_fd, sink->temp_name,
+                      O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0666);
+    if (sink->fd < 0) {
+        goto fail;
+    }
+    if (ftruncate(sink->fd, (off_t)resume_offset) != 0) {
+        goto fail;
+    }
+    sink->received = resume_offset;
+    return 0;
+
+fail:
+    saved_errno = errno;
+    if (sink->fd >= 0) {
+        close(sink->fd);
+        sink->fd = -1;
+    }
+    free(sink->temp_name);
+    sink->temp_name = NULL;
+    errno = saved_errno;
+    return -1;
+}
+
 int cn_file_sink_write(struct cn_file_sink *sink, uint64_t offset,
                        const uint8_t *data, size_t length)
 {
