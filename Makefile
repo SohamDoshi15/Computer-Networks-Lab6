@@ -14,19 +14,20 @@ CPPFLAGS += -D_DARWIN_C_SOURCE
 endif
 
 BUILD_DIR := build
-COMMON_SOURCES := common/protocol.c common/serialization.c common/socket_io.c common/cli.c
-SERVER_SOURCES := server/server_common.c server/fault_injection.c $(COMMON_SOURCES)
-CLIENT_SOURCES := client/client.c $(COMMON_SOURCES)
+COMMON_SOURCES := common/protocol.c common/serialization.c common/socket_io.c common/cli.c common/case2_protocol.c
+SERVER_SOURCES := server/server_common.c server/fault_injection.c server/session_store.c $(COMMON_SOURCES)
+CLIENT_SOURCES := client/client.c client/checkpoint.c $(COMMON_SOURCES)
 HEADERS := $(wildcard common/*.h server/*.h client/*.h)
 
 PROGRAMS := $(BUILD_DIR)/server_single $(BUILD_DIR)/server_multi $(BUILD_DIR)/client \
-	$(BUILD_DIR)/server_case1 $(BUILD_DIR)/client_case1
-TESTS := $(BUILD_DIR)/test_common $(BUILD_DIR)/test_client $(BUILD_DIR)/test_fault
+	$(BUILD_DIR)/server_case1 $(BUILD_DIR)/client_case1 \
+	$(BUILD_DIR)/server_case2 $(BUILD_DIR)/client_case2
+TESTS := $(BUILD_DIR)/test_common $(BUILD_DIR)/test_client $(BUILD_DIR)/test_fault $(BUILD_DIR)/test_case2
 
 LINK_WITH_CRYPTO = $(CC) $(CPPFLAGS) $(CRYPTO_CFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ \
 	$(filter %.c,$^) $(CRYPTO_LIBS) $(LDLIBS)
 
-.PHONY: all test e2e e2e_case1 submission clean
+.PHONY: all test e2e e2e_case1 e2e_case2 submission clean
 
 all: $(PROGRAMS) $(TESTS)
 
@@ -46,6 +47,13 @@ $(BUILD_DIR)/server_case1: server/server_case1.c $(SERVER_SOURCES) $(HEADERS) | 
 $(BUILD_DIR)/client_case1: client/main_case1.c $(CLIENT_SOURCES) $(HEADERS) | $(BUILD_DIR)
 	$(LINK_WITH_CRYPTO)
 
+# Part 2 Case 2: thread-per-client server with session store and checkpointed resume.
+$(BUILD_DIR)/server_case2: server/server_case2.c $(SERVER_SOURCES) $(HEADERS) | $(BUILD_DIR)
+	$(LINK_WITH_CRYPTO)
+
+$(BUILD_DIR)/client_case2: client/main_case2.c $(CLIENT_SOURCES) $(HEADERS) | $(BUILD_DIR)
+	$(LINK_WITH_CRYPTO)
+
 $(BUILD_DIR)/client: client/main.c $(CLIENT_SOURCES) $(HEADERS) | $(BUILD_DIR)
 	$(LINK_WITH_CRYPTO)
 
@@ -53,21 +61,28 @@ $(BUILD_DIR)/test_client: tests/test_client.c $(CLIENT_SOURCES) $(HEADERS) | $(B
 	$(LINK_WITH_CRYPTO)
 
 $(BUILD_DIR)/test_fault: tests/test_fault.c server/fault_injection.c $(COMMON_SOURCES) $(HEADERS) | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) $(LDLIBS)
+	$(LINK_WITH_CRYPTO)
 
 $(BUILD_DIR)/test_common: tests/test_common.c $(COMMON_SOURCES) $(HEADERS) | $(BUILD_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(filter %.c,$^) $(LDLIBS)
+	$(LINK_WITH_CRYPTO)
+
+$(BUILD_DIR)/test_case2: tests/test_case2.c $(SERVER_SOURCES) $(CLIENT_SOURCES) $(HEADERS) | $(BUILD_DIR)
+	$(LINK_WITH_CRYPTO)
 
 test: $(TESTS)
 	./$(BUILD_DIR)/test_common
 	./$(BUILD_DIR)/test_client
 	./$(BUILD_DIR)/test_fault
+	./$(BUILD_DIR)/test_case2
 
 e2e: $(PROGRAMS)
 	sh tests/e2e.sh
 
 e2e_case1: $(PROGRAMS)
 	sh tests/e2e_case1.sh
+
+e2e_case2: $(PROGRAMS)
+	sh tests/e2e_case2.sh
 
 # The graded layout (design document section 8), generated under build/.
 submission:
