@@ -58,7 +58,7 @@ add_case Part1/single_threaded server/server_single.c
 add_case Part1/multi_threaded server/server_multi.c
 add_case Part2_Case1 server/server_case1.c client/main_case1.c
 add_case Part2_Case2 server/server_case2.c client/main_case2.c
-# Part2_Case2_Enhanced is added here as it lands.
+add_case Part2_Case2_Enhanced server/server_enhanced.c client/main_enhanced.c
 
 cat >"$OUT/README.md" <<'EOF'
 # IT305 Socket Programming Project - Groups 064 and 091
@@ -73,6 +73,7 @@ and OpenSSL's libcrypto.
 | `Part1/multi_threaded` | concurrent | one worker thread per client |
 | `Part2_Case1` | concurrent + faults | no session state; client restarts from the beginning |
 | `Part2_Case2` | concurrent + faults | session store + durable checkpoints; client resumes |
+| `Part2_Case2_Enhanced` | concurrent + faults | parallel TCP connections and non-overlapping byte range reassembly |
 
 ```sh
 cd Part1/multi_threaded && make

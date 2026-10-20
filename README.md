@@ -30,6 +30,8 @@ make          # build/server_single, build/server_multi, build/client, test bina
 make test     # protocol unit tests and client fault-injection tests
 make e2e      # real client against both real servers over TCP
 make e2e_case1   # Case 1: fault injection, restarts, byte accounting over TCP
+make e2e_case2   # Case 2: durable checkpoints, session resume over TCP
+make e2e_enhanced # Enhanced Case 2: parallel TCP connections, range reassembly
 make submission  # build/FinalSubmission_Group_064_091/, one folder per case
 ```
 
