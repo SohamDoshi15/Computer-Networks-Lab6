@@ -43,6 +43,7 @@ struct range_task {
     uint64_t end_offset;
     uint64_t current_offset;
     int completed;
+    int in_progress;
     struct range_task *next;
 };
 
@@ -112,6 +113,24 @@ static int connect_tcp(const char *host, uint16_t port)
     return sock_fd;
 }
 
+static int pwrite_all(int fd, const uint8_t *buffer, size_t length, off_t offset)
+{
+    size_t written = 0;
+
+    while (written < length) {
+        ssize_t rc = pwrite(fd, buffer + written, length - written,
+                            offset + (off_t)written);
+        if (rc > 0) {
+            written += (size_t)rc;
+        } else if (rc < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static void *worker_thread(void *arg)
 {
     struct parallel_pool *pool = arg;
@@ -121,8 +140,12 @@ static void *worker_thread(void *arg)
 
         pthread_mutex_lock(&pool->queue_lock);
         task = pool->queue_head;
-        while (task != NULL && task->completed) {
+        while (task != NULL && (task->completed || task->in_progress)) {
             task = task->next;
+        }
+        if (task != NULL) {
+            /* A task stays owned by this worker across reconnect attempts. */
+            task->in_progress = 1;
         }
         pthread_mutex_unlock(&pool->queue_lock);
 
@@ -220,13 +243,19 @@ static void *worker_thread(void *arg)
                         const uint8_t *chunk = data_payload + 16;
                         size_t chunk_bytes = (size_t)dhdr.payload_length > 16 ?
                                              (size_t)dhdr.payload_length - 16 : 0;
-                        if (chunk_bytes > 0 && findex == task->file_index) {
-                            pwrite(pool->files[findex].fd, chunk, chunk_bytes, (off_t)offset);
+                        if (chunk_bytes > 0 && data_len == chunk_bytes &&
+                            findex == task->file_index && offset == task->current_offset &&
+                            chunk_bytes <= task->end_offset - task->current_offset &&
+                            pwrite_all(pool->files[findex].fd, chunk, chunk_bytes,
+                                       (off_t)offset) == 0) {
                             task->current_offset = offset + chunk_bytes;
 
                             pthread_mutex_lock(&pool->metrics_lock);
                             pool->data_bytes_received += chunk_bytes;
                             pthread_mutex_unlock(&pool->metrics_lock);
+                        } else {
+                            free(data_payload);
+                            break;
                         }
                     }
                 }
@@ -238,6 +267,7 @@ static void *worker_thread(void *arg)
             if (range_done || task->current_offset >= task->end_offset) {
                 pthread_mutex_lock(&pool->queue_lock);
                 task->completed = 1;
+                task->in_progress = 0;
                 pool->completed_ranges++;
 
                 /* Check if file is finished */
@@ -282,6 +312,7 @@ int main(int argc, char **argv)
     const char *manifest_reason = NULL;
     size_t i;
     int dir_fd = -1;
+    int success;
 
     if (argc < 5) {
         fprintf(stderr, "usage: client <server_ip> <server_port> <topic> <output_dir> [parallel_connections]\n");
@@ -401,8 +432,13 @@ int main(int argc, char **argv)
         f->final_path = strdup(final_buf);
 
         f->fd = open(f->part_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
-        if (f->fd >= 0 && f->size > 0) {
-            (void)ftruncate(f->fd, (off_t)f->size);
+        if (f->fd < 0 || (f->size > 0 && ftruncate(f->fd, (off_t)f->size) != 0)) {
+            if (f->fd >= 0) {
+                close(f->fd);
+            }
+            fprintf(stderr, "client: failed to prepare output for %s\n", f->name);
+            cn_manifest_free(&manifest);
+            return 6;
         }
 
         /* Partition into ranges */
@@ -428,6 +464,7 @@ int main(int argc, char **argv)
             t->end_offset = end;
             t->current_offset = offset;
             t->completed = 0;
+            t->in_progress = 0;
             t->next = NULL;
 
             *tail_ptr = t;
@@ -483,6 +520,8 @@ int main(int argc, char **argv)
            pool.data_bytes_received, useful_bytes, pool.wire_bytes_received,
            elapsed, mbps, redundant_bytes, retransmission_ratio, overhead_ratio, num_workers);
 
+    success = completed_files == manifest.count;
+
     /* Free structures */
     for (i = 0; i < manifest.count; ++i) {
         free(pool.files[i].name);
@@ -501,5 +540,5 @@ int main(int argc, char **argv)
     pthread_mutex_destroy(&pool.queue_lock);
     pthread_mutex_destroy(&pool.metrics_lock);
 
-    return (completed_files == manifest.count) ? 0 : 5;
+    return success ? 0 : 5;
 }

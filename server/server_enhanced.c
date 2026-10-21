@@ -45,7 +45,6 @@ struct worker_args {
     const struct cn_fault_config *fault_config;
 };
 
-static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct cn_session_store g_session_store;
 
 static int send_frame(int fd, uint8_t type, const uint8_t transfer_id[16],
@@ -133,7 +132,6 @@ static int handle_get_request(int client_fd, const struct cn_frame_header *hdr,
 
 static int handle_assign_range(int client_fd, const struct cn_frame_header *hdr,
                                const uint8_t *payload, const char *root,
-                               const struct worker_args *args,
                                struct cn_fault_injector *fault)
 {
     struct cn_range_assignment req;
@@ -177,8 +175,8 @@ static int handle_assign_range(int client_fd, const struct cn_frame_header *hdr,
         return -1;
     }
 
-    /* Plan fault injection for the byte range */
-    cn_fault_plan_connection(fault, req.end_offset - req.start_offset);
+    /* Each range connection gets one deterministic fault decision. */
+    (void)cn_fault_plan(fault, req.end_offset - req.start_offset);
 
     topic_fd = open(manifest.topic_path, O_RDONLY | O_CLOEXEC | O_DIRECTORY);
     if (topic_fd >= 0) {
@@ -199,36 +197,24 @@ static int handle_assign_range(int client_fd, const struct cn_frame_header *hdr,
             break;
         }
 
-        /* Check fault injection */
-        if (fault->config.probability > 0.0 && fault->cut_planned) {
-            if (fault->data_bytes_sent + (size_t)bytes_read >= fault->cut_at) {
-                size_t allowable = (fault->cut_at > fault->data_bytes_sent) ?
-                                   (size_t)(fault->cut_at - fault->data_bytes_sent) : 0;
-                if (allowable > 0) {
-                    cn_writer_init(&writer, data_frame_buf, 16 + allowable);
-                    cn_writer_put_u32(&writer, req.file_index);
-                    cn_writer_put_u64(&writer, current_offset);
-                    cn_writer_put_u32(&writer, (uint32_t)allowable);
-                    (void)send_frame(client_fd, CN_MSG_DATA, hdr->transfer_id, data_frame_buf, 16 + allowable);
-                }
-                fault->fired = 1;
-                cn_fault_execute_cut(fault, client_fd);
-                rc = -1;
-                goto cleanup;
-            }
-        }
-
         cn_writer_init(&writer, data_frame_buf, 16 + (size_t)bytes_read);
         cn_writer_put_u32(&writer, req.file_index);
         cn_writer_put_u64(&writer, current_offset);
         cn_writer_put_u32(&writer, (uint32_t)bytes_read);
 
-        if (send_frame(client_fd, CN_MSG_DATA, hdr->transfer_id, data_frame_buf, 16 + (size_t)bytes_read) != CN_PROTOCOL_OK) {
+        struct cn_frame_header data_header;
+        memset(&data_header, 0, sizeof(data_header));
+        data_header.version = CN_PROTOCOL_VERSION;
+        data_header.message_type = CN_MSG_DATA;
+        data_header.payload_length = 16 + (size_t)bytes_read;
+        memcpy(data_header.transfer_id, hdr->transfer_id, CN_TRANSFER_ID_SIZE);
+
+        if (cn_fault_send_data_frame(client_fd, fault, &data_header, data_frame_buf,
+                                     (size_t)bytes_read) != CN_PROTOCOL_OK) {
             rc = -1;
             goto cleanup;
         }
 
-        fault->data_bytes_sent += (size_t)bytes_read;
         current_offset += (size_t)bytes_read;
     }
 
@@ -266,7 +252,7 @@ static void *worker_main(void *arg)
         if (hdr.message_type == CN_MSG_GET) {
             handle_get_request(args->client_fd, &hdr, payload, args->root);
         } else if (hdr.message_type == CN_MSG_ASSIGN_RANGE) {
-            handle_assign_range(args->client_fd, &hdr, payload, args->root, args, &fault);
+            handle_assign_range(args->client_fd, &hdr, payload, args->root, &fault);
         } else {
             part1_send_error(args->client_fd, hdr.transfer_id, CN_ERR_INVALID_REQUEST, "unexpected message");
         }
@@ -288,14 +274,17 @@ int main(int argc, char **argv)
     struct sockaddr_in sin;
     int opt = 1;
     uint64_t next_conn = 1;
+    const char *fault_error = NULL;
 
-    if (cn_cli_parse_part2_server(argc, (const char *const *)argv, &port, &root, &probability) != 0) {
+    if (argc != 4 || cn_parse_port(argv[1], &port) != 0 ||
+        cn_parse_probability(argv[3], &probability) != 0) {
         fprintf(stderr, "usage: server <port> <topics_root_dir> <failure_probability>\n");
         return 1;
     }
+    root = argv[2];
 
-    if (cn_fault_config_init(&fault_config, probability) != 0) {
-        fprintf(stderr, "server: invalid fault configuration\n");
+    if (cn_fault_config_init(&fault_config, probability, &fault_error) != 0) {
+        fprintf(stderr, "server: invalid fault configuration: %s\n", fault_error);
         return 1;
     }
 
