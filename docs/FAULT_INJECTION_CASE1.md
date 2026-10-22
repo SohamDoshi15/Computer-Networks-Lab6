@@ -210,132 +210,34 @@ attempts; the server counts per connection.
 The same counters work for Case 2 and Case 2 Enhanced. Redundant bytes are
 the quantity that session management should reduce.
 
-## 4. Case 1 analysis
+## 4. Validation measurements
 
-### 4.1 Setup
+The CSV files and figures under `Results/` were regenerated on 22 October
+2026 from the current binaries. The validation workload contains ten random
+binary files totaling 12,582,910 bytes. Server and clients ran on one WSL2
+host over loopback; three repetitions were collected at connection failure
+probabilities 0, 0.2, and 0.5. `Results/README.md` records the exact scope and
+commands.
 
-* **Machine:** server and client ran on one Apple-silicon Mac (8 cores,
-  macOS 26.5) over loopback, using the final binaries (with `TCP_NODELAY`).
-  **These are not the three-computer measurements.** The group's
-  three-computer runs should replace these numbers in the final report; the
-  same scripts work unchanged there; see `docs/THREE_COMPUTER_RUN.md` for the
-  procedure and for the multi-host verification already done.
-* **Topic:** `scoiattolo` from Animals-10: 1,862 files, 25,409,193 bytes. Every
-  file is smaller than 64 KiB, so each file is exactly one DATA frame.
-* **Runs:** 20 per point, each with its own fixed fault seed, so every row
-  can be reproduced. The default client settings were used: 50 ms retry
-  pause, at most 100 attempts.
-* **Part 1 baseline:** 20 runs of the same topic through `server_multi` and
-  the Part 1 client, after one warm-up fetch so the page cache is hot.
-* **Commands:**
-  `sh scripts/run_case1_experiments.sh ../dataset/raw-img scoiattolo 20 Results`,
-  then `scripts/summarize_case1.py` and `scripts/plot_case1.py`.
-* **Raw data:** `Results/Part2_Case1_runs.csv` (one row per client run),
-  `Results/Part2_Case1_server_connections.csv` (one row per server
-  connection), `Results/Part2_Case1_part1_baseline.csv`.
-* **Summary and graphs:** `Results/Part2_Case1_summary.csv`,
-  `Part2_Case1_throughput.png`, `Part2_Case1_overhead.png`,
-  `Part2_Case1_bytes.png`.
+| p | mean attempts | mean goodput (MB/s) | mean redundant data (MB) |
+|---:|---:|---:|---:|
+| 0.0 | 1.00 | 21.54 | 0.00 |
+| 0.2 | 1.33 | 19.78 | 0.99 |
+| 0.5 | 1.33 | 25.63 | 2.18 |
 
-### 4.2 Model
+The p=0.5 goodput is higher than p=0 in this small three-run sample because
+two of the three seeded runs completed without a cut. It is sampling noise,
+not evidence that faults improve performance. The byte counters still expose
+the cost of the interrupted run: mean redundant data rose from zero to 2.18
+MB. A larger repeated sweep is required for a stable high-p estimate.
 
-With per-connection probability `p`, the number of attempts `N` is geometric,
-so `E[N] = 1/(1-p)`. Each failed attempt is cut at a uniform point, so it
-carries on average `D/2` file bytes, all of which must be sent again. That
-gives:
+With per-connection probability `p`, the theoretical attempt count is
+geometric: `E[N] = 1/(1-p)`. A failed attempt cut uniformly through a topic of
+size `D` carries about `D/2` bytes that Case 1 must later resend, giving
+`E[redundant] = pD/(2(1-p))`. Case 2 avoids full restart by acknowledging and
+persisting checkpoints.
 
-* `E[redundant] = (E[N] - 1) * D/2 = p / (2(1-p)) * D`
-* `overhead ≈ p / (2(1-p))`, plus about 2% for frame headers, the manifest
-  and ACKs
-* if time is proportional to bytes, `goodput ≈ Part1 * (1-p) / (1 - p/2)`
-
-In chunk mode, an attempt survives all `n` frames with probability
-`(1-q)^n`, so `E[N] = (1-q)^-n`. This grows exponentially with the topic
-size.
-
-### 4.3 Results, connection mode (Part 1 baseline: 0.377 s, 67.8 MB/s)
-
-| p | attempts (model) | transmitted MB | redundant MB (model) | overhead (model) | completion s | goodput MB/s | vs Part 1 |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0 | 1.00 (1.00) | 25.91 | 0.0 (0.00) | 0.020 (0.02) | 0.358 | 71.0 | 1.05 |
-| 0.1 | 1.05 (1.11) | 26.57 | 0.64 (1.41) | 0.046 (0.08) | 0.397 | 64.0 | 0.95 |
-| 0.2 | 1.10 (1.25) | 27.59 | 1.64 (3.18) | 0.086 (0.15) | 0.396 | 64.1 | 0.95 |
-| 0.3 | 1.25 (1.43) | 30.29 | 4.28 (5.44) | 0.192 (0.23) | 0.472 | 53.8 | 0.80 |
-| 0.4 | 1.85 (1.67) | 35.14 | 8.96 (8.47) | 0.383 (0.35) | 0.585 | 43.5 | 0.65 |
-| 0.5 | 1.70 (2.00) | 37.22 | 11.04 (12.70) | 0.465 (0.52) | 0.611 | 41.6 | 0.62 |
-| 0.6 | 2.40 (2.50) | 41.74 | 15.39 (19.06) | 0.643 (0.77) | 0.740 | 34.4 | 0.51 |
-| 0.7 | 2.45 (3.33) | 46.39 | 19.96 (29.64) | 0.826 (1.19) | 0.806 | 31.5 | 0.47 |
-| 0.8 | 5.40 (5.00) | 80.32 | 52.96 (50.82) | 2.161 (2.02) | 1.590 | 16.0 | 0.24 |
-| 0.9 | 10.25 (10.00) | 143.57 | 114.57 (114.34) | 4.650 (4.52) | 2.955 | 8.6 | 0.13 |
-
-Notes on the columns:
-
-* Useful bytes are 25.41 MB in every run, because every run finished with a
-  byte-identical, SHA-256-verified copy.
-* Goodput here is useful bytes / mean completion time. The mean of the
-  per-run ratios would overweight lucky runs.
-* The model column for overhead includes the 2% framing cost.
-
-### 4.4 Results, chunk mode (per-frame hazard q, n = 1,862 frames)
-
-| q | attempts (model `(1-q)^-n`) | completed runs | transmitted MB | redundant MB | completion s | goodput MB/s |
-|---:|---:|---:|---:|---:|---:|---:|
-| 0      | 1.00 (1.0)     | 20/20 | 25.91  | 0.00   | 0.366  | 69.4 |
-| 0.0005 | 2.65 (2.5)     | 20/20 | 43.19  | 16.78  | 0.766  | 33.2 |
-| 0.001  | 7.80 (6.4)     | 20/20 | 82.34  | 54.57  | 1.796  | 14.2 |
-| 0.002  | 45.95 (41.6)   | 18/20 | 308.63 | 236.25 | 8.603  | 3.4 among completed runs |
-| 0.005  | 100 (≈ 11,300) | 0/20  | 284.78 | n/a    | 13.801 | 0, gave up |
-
-At q = 0.002, two runs hit the 100-attempt limit. At q = 0.005, the expected
-number of attempts is about 11,300, so no run finished. On average each
-attempt there got through only about 2.8 MB (11%) before it was cut.
-
-### 4.5 Observations
-
-1. **The model predicts Case 1 well.** At p = 0.8 and p = 0.9, the measured
-   attempts (5.4, 10.25), redundant bytes (53.0 MB, 114.6 MB) and overhead
-   (2.16, 4.65) are within a few percent of `1/(1-p)` and `p/(2(1-p))`. At
-   lower p, 20 runs of a geometric variable leave visible sampling noise. For
-   example, p = 0.7 measured 2.45 attempts against 3.33 expected. The full
-   per-run spread is shown by the min-max bars in `Part2_Case1_overhead.png`.
-2. **Cost grows as 1/(1-p), not linearly.** Up to p ≈ 0.3, Case 1 loses about
-   20% or less of the Part 1 goodput. At p = 0.9 it transmits 5.6× the topic
-   size and delivers only 13% of the Part 1 goodput. At p = 0.9, 80% of all
-   bytes on the wire are redundant (`Part2_Case1_bytes.png`).
-3. **Completion time varies a lot.** At p = 0.9, completion time ranged from
-   0.36 s to 10.2 s across runs (standard deviation 2.7 s around a mean of
-   3.0 s). A Case 1 user cannot predict when a download will finish. The
-   best case is one lucky pass; the worst run needed 35 attempts.
-4. **Restarts have a fixed cost on top of the bytes.** Raw throughput
-   (transmitted / time) also drops, from 73 to 53 MB/s, so the slowdown is
-   not caused by the bytes alone. Regressing the 569 server connections in
-   connection mode gives about 53 ms per connection plus 13.2 ms per MB:
-   * The 53 ms is mostly the server rebuilding the manifest, which hashes
-     all 1,862 files again for every new `GET`.
-   * Each restart also includes the client's 50 ms retry pause.
-
-   At p = 0.9 the 9.25 restarts cost about 1.0 s of the 3.0 s. Together,
-   1.9 s of byte transfer (143.6 MB) plus 0.54 s of connection setup plus
-   0.46 s of pauses predicts 2.9 s, against 2.96 s measured.
-5. **Case 1 does not scale with topic size.** Chunk mode is a constant
-   failure rate per unit of data. There, the chance of finishing a whole
-   topic in one pass falls exponentially with its size:
-   * At q = 0.001, `scoiattolo` needs about 8 passes.
-   * At q = 0.005 it practically never finishes; the model predicts about
-     11,000 passes.
-   * The largest topic, `gatto` (147 MB), would be far worse at the same q.
-
-   This is the main argument for Case 2. A checkpoint turns the cost from
-   *exponential in topic size* into *a bounded re-send per failure*.
-6. **Correctness under faults.** Every completed run produced a
-   byte-identical tree with no `.part` files left behind. No partial or
-   corrupted file was ever published under its final name. Faults landing in
-   the middle of a frame, with both FIN and RST, were all detected as network
-   errors and retried.
-
-### 4.6 What Case 2 should be compared on
-
-Case 2 must run the same sweep: the same seeds, the same topic and
-`CN_FAULT_MODE=connection`. Its redundant bytes should drop from
-`p/(2(1-p)) * D` toward the re-send of at most one checkpoint interval per
-failure. Its chunk-mode completion should stay finite at q = 0.005.
+These loopback measurements verify the instrumentation and comparison
+pipeline. They do not replace the assignment's required Animals-10 run across
+three computers. Use `docs/THREE_COMPUTER_RUN.md` and rerun the same scripts
+on the lab machines before treating the performance section as final evidence.

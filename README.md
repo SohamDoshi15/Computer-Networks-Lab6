@@ -36,10 +36,10 @@ make submission  # build/FinalSubmission_Group_064_091/, one folder per case
 ```
 
 Development happens in this single shared tree. `make submission` generates the
-graded layout from the design document: each case folder (for now
-`Part1/single_threaded` and `Part1/multi_threaded`) is self-contained, and
-`make` inside it creates exactly `./server` and `./client`. Part 2 cases are
-added with one `add_case` line in `scripts/package_submission.sh`.
+graded layout from the design document. Each Part 2 case is self-contained and
+`make` inside it creates exactly `./server` and `./client`. `Part1/` defaults to
+the multi-threaded server; `make single` and `make multi` rebuild the same
+`./server` executable for the two required modes.
 
 ## Running
 

@@ -108,26 +108,29 @@ The experimental suite measures the following metrics:
 
 ---
 
-## 5. Experimental Results and Analysis
+## 5. Validation Results and Analysis
 
-### 5.1 Throughput vs. Failure Probability ($p$)
-As shown in `Results/Part2_Case2_Enhanced_throughput.png`:
-- At $p = 0.0$ (no faults), parallel connections ($N=4$ and $N=8$) provide a **$2.5\times$ to $3.2\times$ throughput speedup** over serial Case 2 ($N=1$).
-- As $p$ increases ($p = 0.1 \to 0.5$):
-  - In **Case 1 (Restart)**, throughput collapses exponentially toward zero because any cut discards all prior work and restarts the entire topic.
-  - In **Case 2 (Serial Resume)**, throughput drops gradually because only progress within the interrupted chunk/file is redone.
-  - In **Enhanced Case 2 ($N=4$)**, throughput remains significantly higher across all $p$. Because work is partitioned across $N$ connections, a cut on one connection only stalls that connection's current range, while other connections continue downloading uninterrupted.
+The current figures use actual runs from 22 October 2026, not an analytical
+or synthesized data set. The workload was ten random files totaling
+12,582,910 bytes on one WSL2 host over loopback. Three repetitions were run
+for N=1, 2, and 4 at p=0, 0.2, and 0.5. See `Results/README.md` for provenance.
 
-### 5.2 Retransmission Overhead Comparison
-As shown in `Results/Part2_Case2_Enhanced_overhead.png` and `Results/Case_Comparison_Throughput.png`:
-- **Case 1** suffers redundant retransmission ratios exceeding $300\% - 600\%$ at moderate failure rates ($p \ge 0.3$).
-- **Enhanced Case 2** maintains a redundant byte ratio bounded below $5\% - 12\%$ across the entire test range, because only the unacknowledged bytes of an individual range slice ($\le 512$ KiB) are retransmitted.
+| p | N=1 MB/s | N=2 MB/s | N=4 MB/s |
+|---:|---:|---:|---:|
+| 0.0 | 2.39 | 4.76 | 6.86 |
+| 0.2 | 2.08 | 3.90 | 6.06 |
+| 0.5 | 1.05 | 2.14 | 4.23 |
 
-### 5.3 Speedup Scaling with Connection Count ($N$)
-As shown in `Results/Part2_Case2_Enhanced_speedup.png`:
-- $N=1 \to N=2$: Near-linear speedup ($\approx 1.85\times$) by utilizing independent TCP window pipelines.
-- $N=2 \to N=4$: Strong scaling ($\approx 2.7\times$), optimal for standard lab gigabit links.
-- $N \ge 8$: Speedup begins to plateau due to loopback/disk write bandwidth and OS socket scheduling overhead. Therefore, **$N=4$ is confirmed as the optimal default configuration**.
+At p=0, N=4 was 2.88 times faster than N=1. At p=0.2, the measured speedup
+was 2.92 times. Throughput declined as faults increased, but the four-worker
+configuration remained faster because unaffected ranges continued in
+parallel. No complete DATA payload was received twice in this run, so
+`redundant_bytes` stayed at zero; reconnect/control-frame overhead still rose
+slightly with p.
+
+The measurements establish local behavior only. They do not prove that N=4
+is optimal on the lab network and do not replace the required Animals-10,
+three-computer experiment.
 
 ---
 
@@ -144,7 +147,7 @@ As shown in `Results/Part2_Case2_Enhanced_speedup.png`:
    ```
 3. **Execute Benchmark Experiments**:
    ```bash
-   sh scripts/run_case2_enhanced_experiments.sh tests/data Cane 3 Results
+   sh scripts/run_case2_enhanced_experiments.sh /path/to/raw-img cane 3 Results
    ```
 4. **Generate Figures and Plots**:
    ```bash

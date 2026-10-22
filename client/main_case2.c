@@ -582,7 +582,8 @@ int main(int argc, char **argv)
                     goto attempt_done;
                 } else {
                     status = CN_CLIENT_SERVER_ERROR;
-                    (void)snprintf(report.message, sizeof(report.message), "server error: %s", err_text);
+                    (void)snprintf(report.message, sizeof(report.message),
+                                   "server error: %.497s", err_text);
                     break;
                 }
             }
@@ -657,7 +658,8 @@ int main(int argc, char **argv)
                 free(resp_payload);
                 close(socket_fd);
                 status = CN_CLIENT_SERVER_ERROR;
-                (void)snprintf(report.message, sizeof(report.message), "server error: %s", err_text);
+                (void)snprintf(report.message, sizeof(report.message),
+                               "server error: %.497s", err_text);
                 break;
             }
 

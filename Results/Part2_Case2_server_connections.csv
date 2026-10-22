@@ -1,0 +1,11 @@
+run,seed,connection_id,topic,outcome,probability,fault_mode,files_acked,files_total,data_bytes_sent,data_bytes_planned,wire_bytes_sent,wire_bytes_received,duration_seconds,fault_fired,cut_at_data_byte
+1,4419,1,cane,complete,0.0000,connection,10,10,12582910,12582910,12593544,8036,5.084199,0,0
+2,5419,1,cane,complete,0.0000,connection,10,10,12582910,12582910,12593544,8036,4.864423,0,0
+1,2312,1,cane,injected_fault,0.2000,connection,2,10,2985100,12582910,2988148,1636,1.133438,1,2985100
+1,2312,2,cane,failed,0.2000,connection,0,0,0,0,117,172,0.284127,0,0
+3,4312,1,cane,complete,0.2000,connection,10,10,12582910,12582910,12593544,8036,4.888191,0,0
+1,3039,1,cane,injected_fault,0.5000,connection,5,10,6618321,12582910,6624231,4036,2.429528,1,6618321
+1,3039,2,cane,failed,0.5000,connection,0,0,0,0,117,280,0.282266,0,0
+1,3039,3,cane,complete,0.5000,connection,10,10,12582910,12582910,12593544,8036,6.092331,0,0
+2,4039,1,cane,complete,0.5000,connection,10,10,12582910,12582910,12593544,8036,5.012939,0,0
+2,5419,1,cane,complete,0.0000,chunk,10,10,12582910,12582910,12593544,8036,4.600270,0,0
