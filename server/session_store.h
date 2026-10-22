@@ -44,6 +44,10 @@ void cn_session_store_remove(struct cn_session_store *store,
 
 void cn_session_store_clean_expired(struct cn_session_store *store);
 
+int cn_session_store_get_topic(struct cn_session_store *store,
+                               const uint8_t transfer_id[CN_TRANSFER_ID_SIZE],
+                               char topic_out[CN_MAX_TOPIC_SIZE + 1]);
+
 int cn_session_store_validate_resume(struct cn_session_store *store,
                                      const uint8_t transfer_id[CN_TRANSFER_ID_SIZE],
                                      const char *topic,

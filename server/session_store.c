@@ -122,6 +122,31 @@ int cn_session_store_update_ack(struct cn_session_store *store,
     return found ? 0 : -1;
 }
 
+int cn_session_store_get_topic(struct cn_session_store *store,
+                               const uint8_t transfer_id[CN_TRANSFER_ID_SIZE],
+                               char topic_out[CN_MAX_TOPIC_SIZE + 1])
+{
+    struct cn_session *curr;
+    int found = 0;
+
+    if (store == NULL || transfer_id == NULL || topic_out == NULL) return -1;
+
+    pthread_mutex_lock(&store->lock);
+    cn_session_store_clean_expired(store);
+    curr = store->head;
+    while (curr != NULL) {
+        if (memcmp(curr->transfer_id, transfer_id, CN_TRANSFER_ID_SIZE) == 0) {
+            (void)snprintf(topic_out, CN_MAX_TOPIC_SIZE + 1, "%s", curr->topic);
+            curr->last_active = time(NULL);
+            found = 1;
+            break;
+        }
+        curr = curr->next;
+    }
+    pthread_mutex_unlock(&store->lock);
+    return found ? 0 : -1;
+}
+
 void cn_session_store_remove(struct cn_session_store *store,
                              const uint8_t transfer_id[CN_TRANSFER_ID_SIZE])
 {
