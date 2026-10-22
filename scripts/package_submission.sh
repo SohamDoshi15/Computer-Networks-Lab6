@@ -143,8 +143,26 @@ cd Part1 && make                 # multi-threaded server (default)
 
 Run `make clean && make single` to rebuild `./server` in sequential mode.
 
-Part 2 servers take the failure probability as a third argument:
-`./server <port> <topics_root_dir> <failure_probability>`.
+Build and run each Part 2 case independently. The same required invocation
+works without any extra arguments in all three folders:
+
+```sh
+cd Part2_Case1 && make
+./server <port> <topics_root_dir> <failure_probability>
+./client <server_ip> <server_port> <topic> <output_dir>
+
+cd ../Part2_Case2 && make
+./server <port> <topics_root_dir> <failure_probability>
+./client <server_ip> <server_port> <topic> <output_dir>
+
+cd ../Part2_Case2_Enhanced && make
+./server <port> <topics_root_dir> <failure_probability>
+./client <server_ip> <server_port> <topic> <output_dir>
+```
+
+The enhanced client optionally accepts a fifth argument for the number of
+parallel connections, but defaults to four when the required invocation above
+is used unchanged.
 
 ## Fault injection (Part 2)
 

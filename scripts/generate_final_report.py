@@ -190,27 +190,21 @@ def build_report() -> None:
     doc.addPageTemplates(PageTemplate(id="main", frames=[body], onPage=decorate))
 
     S = []
-    S += [Spacer(1, 2.1 * cm), paragraph("IT305 LAB", styles["Subtitle"]), Spacer(1, 0.35 * cm)]
+    S += [Spacer(1, 0.7 * cm), paragraph("IT305 LAB", styles["Subtitle"]), Spacer(1, 0.25 * cm)]
     S += [paragraph("Fault-Tolerant Topic-Based<br/>File Distribution Service", styles["ReportTitle"])]
-    S += [paragraph("Final Code and Result Analysis", styles["Subtitle"]), Spacer(1, 0.45 * cm)]
-    S += [HRFlowable(width="70%", thickness=2, color=TEAL, hAlign="CENTER"), Spacer(1, 0.55 * cm)]
-    S += [paragraph("Groups 064 and 091", styles["Subtitle"]), Spacer(1, 0.7 * cm)]
-    members = [
-        ["Purva Kaneria", "20241171"], ["Soham Doshi", "202401208"],
-        ["Shaurya Shekhawat", "202401197"], ["Om Patel", "202401439"],
-        ["Aditya Vaish", "202401401"], ["Tirth Patel", "202401227"],
+    S += [paragraph("Final Code and Result Analysis", styles["Subtitle"]), Spacer(1, 0.3 * cm)]
+    S += [HRFlowable(width="70%", thickness=2, color=TEAL, hAlign="CENTER"), Spacer(1, 0.35 * cm)]
+    S += [paragraph("Groups 064 and 091", styles["Subtitle"]), Spacer(1, 0.4 * cm)]
+    contributions = [
+        ["Member", "Roll number", "Individual contribution"],
+        ["Purva Kaneria", "20241171", "Enhanced Case 2 parallel ranges, experiment harness, plots and analysis."],
+        ["Soham Doshi", "202401208", "Part I topic discovery, safe paths, sequential and multi-threaded servers."],
+        ["Shaurya Shekhawat", "202401197", "Case 2 session store, durable checkpoints and resume protocol."],
+        ["Om Patel", "202401439", "Shared protocol, integration, documentation, hardening and final-package checks."],
+        ["Aditya Vaish", "202401401", "Common client, safe file publication, integrity checks and client CLI."],
+        ["Tirth Patel", "202401227", "Case 1 fault injection, restart client, metrics and experiment workflow."],
     ]
-    member_table = Table(members, colWidths=[7.2 * cm, 4.0 * cm], hAlign="CENTER")
-    member_table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("TEXTCOLOR", (0, 0), (-1, -1), INK),
-        ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.white, PALE_BLUE]),
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#BCCCDC")),
-        ("TOPPADDING", (0, 0), (-1, -1), 7),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-    ]))
-    S += [member_table, Spacer(1, 1.0 * cm)]
+    S += [table(contributions, [3.0 * cm, 2.2 * cm, 11.2 * cm], font_size=7.2), Spacer(1, 0.45 * cm)]
     S += [paragraph("Report generated from repository state and measured validation runs on 22 October 2026.", styles["Smallx"])]
     S += [PageBreak()]
 
@@ -227,18 +221,7 @@ def build_report() -> None:
         "Evidence boundary: the performance figures in this report are real same-host WSL2 loopback measurements on a 12.58 MB validation workload. They verify the instrumentation and relative behavior, but they are not the assignment's required Animals-10 experiment using one server computer and two client computers. That final physical experiment remains the only unresolved submission requirement.",
         styles["Callout"],
     )]
-    S += [paragraph("Team Contributions", styles["H2x"])]
-    contributions = [
-        ["Member", "Primary contribution"],
-        ["Purva Kaneria", "Enhanced Case 2: parallel range design, client/server implementation, experiment harness, plots and analysis."],
-        ["Soham Doshi", "Part I topic discovery, safe path handling, sequential and multi-threaded servers."],
-        ["Shaurya Shekhawat", "Case 2 server session store, durable checkpoints, RESUME/RESUME_OK protocol and fallbacks."],
-        ["Om Patel", "Shared framing/serialization/socket layer, integration, protocol documentation, hardening, sanitizer and final-package checks."],
-        ["Aditya Vaish", "Common client, temporary-file publication, size/SHA-256 validation, client CLI and initial packaging layout."],
-        ["Tirth Patel", "Case 1 fault injection, restart client, exact metrics, experiment and plotting workflow."],
-    ]
-    S += [table(contributions, [3.1 * cm, 13.0 * cm], font_size=7.9)]
-    S += [Spacer(1, 0.25 * cm), paragraph("Repository history and module ownership support these contribution lines; every member remains jointly responsible for the whole system and viva.", styles["Smallx"])]
+    S += [paragraph("The cover records each member's primary contribution. Repository history and module ownership support those lines; every member remains jointly responsible for the whole system and viva.", styles["Smallx"])]
 
     S += [PageBreak(), paragraph("1. Requirements and Compliance", styles["H1x"])]
     compliance = [
