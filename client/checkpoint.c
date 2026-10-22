@@ -11,6 +11,25 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* magic, version, transfer ID, topic length, identity, file index, offset, count */
+#define CHECKPOINT_FIXED_SIZE (4u + 4u + CN_TRANSFER_ID_SIZE + 4u + CN_SHA256_SIZE + 4u + 8u + 4u)
+#define CHECKPOINT_ENTRY_SIZE (4u + CN_SHA256_SIZE)
+/* Its completed list is sent back in RESUME, which has to fit in one frame. */
+#define CHECKPOINT_MAX_SIZE CN_MAX_PAYLOAD_SIZE
+
+static int write_all(int fd, const uint8_t *data, size_t length)
+{
+    size_t written = 0;
+
+    while (written < length) {
+        const ssize_t result = write(fd, data + written, length - written);
+        if (result < 0 && errno == EINTR) continue;
+        if (result <= 0) return -1;
+        written += (size_t)result;
+    }
+    return 0;
+}
+
 static int get_topic_path(char *buf, size_t buf_cap, const char *output_dir,
                           const char *topic, const char *filename)
 {
@@ -73,10 +92,11 @@ int cn_checkpoint_save(const char *output_dir, const char *topic,
     char tmp_path[1024];
     char final_path[1024];
     char dir_path[1024];
-    uint8_t buffer[65536];
+    uint8_t *buffer;
+    size_t capacity;
     struct cn_writer writer;
     uint32_t i;
-    int fd, dir_fd;
+    int fd, dir_fd, result = -1;
 
     if (output_dir == NULL || topic == NULL || ckpt == NULL) return -1;
     if (get_topic_path(tmp_path, sizeof(tmp_path), output_dir, topic, ".checkpoint.tmp") != 0 ||
@@ -85,7 +105,15 @@ int cn_checkpoint_save(const char *output_dir, const char *topic,
         return -1;
     }
 
-    cn_writer_init(&writer, buffer, sizeof(buffer));
+    /* The completed list grows with the topic (Animals-10 topics hold up to
+       ~5000 files), so size the buffer from it instead of a fixed array. */
+    capacity = CHECKPOINT_FIXED_SIZE + strlen(ckpt->topic) +
+               (size_t)ckpt->completed_count * CHECKPOINT_ENTRY_SIZE;
+    if (capacity > CHECKPOINT_MAX_SIZE) return -1;
+    buffer = malloc(capacity);
+    if (buffer == NULL) return -1;
+
+    cn_writer_init(&writer, buffer, capacity);
     if (cn_writer_put_u32(&writer, CN_CHECKPOINT_MAGIC) != 0 ||
         cn_writer_put_u32(&writer, CN_CHECKPOINT_VERSION) != 0 ||
         cn_writer_put_bytes(&writer, ckpt->transfer_id, CN_TRANSFER_ID_SIZE) != 0 ||
@@ -94,35 +122,29 @@ int cn_checkpoint_save(const char *output_dir, const char *topic,
         cn_writer_put_u32(&writer, ckpt->file_index) != 0 ||
         cn_writer_put_u64(&writer, ckpt->contiguous_offset) != 0 ||
         cn_writer_put_u32(&writer, ckpt->completed_count) != 0) {
-        return -1;
+        goto done;
     }
 
     for (i = 0; i < ckpt->completed_count; ++i) {
         if (cn_writer_put_u32(&writer, ckpt->completed[i].file_index) != 0 ||
             cn_writer_put_bytes(&writer, ckpt->completed[i].sha256, CN_SHA256_SIZE) != 0) {
-            return -1;
+            goto done;
         }
     }
 
     fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
-    if (fd < 0) return -1;
+    if (fd < 0) goto done;
 
-    if (write(fd, buffer, writer.offset) != (ssize_t)writer.offset) {
+    if (write_all(fd, buffer, writer.offset) != 0 || fsync(fd) != 0) {
         close(fd);
         (void)unlink(tmp_path);
-        return -1;
-    }
-
-    if (fsync(fd) != 0) {
-        close(fd);
-        (void)unlink(tmp_path);
-        return -1;
+        goto done;
     }
     close(fd);
 
     if (rename(tmp_path, final_path) != 0) {
         (void)unlink(tmp_path);
-        return -1;
+        goto done;
     }
 
     dir_fd = open(dir_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -130,19 +152,23 @@ int cn_checkpoint_save(const char *output_dir, const char *topic,
         (void)fsync(dir_fd);
         close(dir_fd);
     }
+    result = 0;
 
-    return 0;
+done:
+    free(buffer);
+    return result;
 }
 
 int cn_checkpoint_load(const char *output_dir, const char *topic,
                        struct cn_checkpoint *ckpt)
 {
     char path[1024];
-    uint8_t buffer[65536];
+    uint8_t *buffer = NULL;
     struct cn_reader reader;
+    struct stat st;
     uint32_t magic, version, i;
-    ssize_t bytes_read;
-    int fd;
+    size_t length = 0;
+    int fd, result = -1;
 
     if (output_dir == NULL || topic == NULL || ckpt == NULL) return -1;
     memset(ckpt, 0, sizeof(*ckpt));
@@ -153,12 +179,26 @@ int cn_checkpoint_load(const char *output_dir, const char *topic,
 
     fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return -1;
-
-    bytes_read = read(fd, buffer, sizeof(buffer));
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+        (uint64_t)st.st_size > CHECKPOINT_MAX_SIZE) {
+        close(fd);
+        return -1;
+    }
+    buffer = malloc((size_t)st.st_size);
+    if (buffer == NULL) {
+        close(fd);
+        return -1;
+    }
+    while (length < (size_t)st.st_size) {
+        const ssize_t got = read(fd, buffer + length, (size_t)st.st_size - length);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) break;
+        length += (size_t)got;
+    }
     close(fd);
-    if (bytes_read <= 0) return -1;
+    if (length != (size_t)st.st_size) goto done;
 
-    cn_reader_init(&reader, buffer, (size_t)bytes_read);
+    cn_reader_init(&reader, buffer, length);
     if (cn_reader_get_u32(&reader, &magic) != 0 || magic != CN_CHECKPOINT_MAGIC ||
         cn_reader_get_u32(&reader, &version) != 0 || version != CN_CHECKPOINT_VERSION ||
         cn_reader_get_bytes(&reader, ckpt->transfer_id, CN_TRANSFER_ID_SIZE) != 0 ||
@@ -166,25 +206,30 @@ int cn_checkpoint_load(const char *output_dir, const char *topic,
         cn_reader_get_bytes(&reader, ckpt->manifest_identity, CN_SHA256_SIZE) != 0 ||
         cn_reader_get_u32(&reader, &ckpt->file_index) != 0 ||
         cn_reader_get_u64(&reader, &ckpt->contiguous_offset) != 0 ||
-        cn_reader_get_u32(&reader, &ckpt->completed_count) != 0) {
-        return -1;
+        cn_reader_get_u32(&reader, &ckpt->completed_count) != 0 ||
+        cn_reader_remaining(&reader) != (size_t)ckpt->completed_count * CHECKPOINT_ENTRY_SIZE) {
+        goto done;
     }
 
     if (ckpt->completed_count > 0) {
         ckpt->completed = calloc(ckpt->completed_count, sizeof(*ckpt->completed));
-        if (ckpt->completed == NULL) return -1;
+        if (ckpt->completed == NULL) goto done;
 
         for (i = 0; i < ckpt->completed_count; ++i) {
             if (cn_reader_get_u32(&reader, &ckpt->completed[i].file_index) != 0 ||
                 cn_reader_get_bytes(&reader, ckpt->completed[i].sha256, CN_SHA256_SIZE) != 0) {
-                free(ckpt->completed);
-                ckpt->completed = NULL;
-                return -1;
+                goto done;
             }
         }
     }
+    result = 0;
 
-    return 0;
+done:
+    if (result != 0) {
+        cn_checkpoint_free(ckpt);
+    }
+    free(buffer);
+    return result;
 }
 
 void cn_checkpoint_remove(const char *output_dir, const char *topic)

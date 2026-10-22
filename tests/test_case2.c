@@ -5,6 +5,7 @@
 #include "../common/serialization.h"
 #include "../server/session_store.h"
 #include "../client/checkpoint.h"
+#include "../client/client.h"
 
 #include <assert.h>
 #include <fcntl.h>
@@ -118,13 +119,15 @@ static void test_session_store(void)
                                            &acc_idx, &acc_off, reason, sizeof(reason)) == 0);
     assert(acc_idx == 1 && acc_off == 200);
 
-    /* Invalid resume: requested offset exceeds acknowledged */
+    /* Client checkpoint ahead of the stored ACK (offset): resume at the ACK */
     assert(cn_session_store_validate_resume(&store, id1, "Cane", hash, 2, 600,
-                                           &acc_idx, &acc_off, reason, sizeof(reason)) != 0);
+                                           &acc_idx, &acc_off, reason, sizeof(reason)) == 0);
+    assert(acc_idx == 2 && acc_off == 500);
 
-    /* Invalid resume: requested file exceeds acknowledged */
+    /* Client checkpoint ahead of the stored ACK (file): resume at the ACK */
     assert(cn_session_store_validate_resume(&store, id1, "Cane", hash, 3, 0,
-                                           &acc_idx, &acc_off, reason, sizeof(reason)) != 0);
+                                           &acc_idx, &acc_off, reason, sizeof(reason)) == 0);
+    assert(acc_idx == 2 && acc_off == 500);
 
     /* Invalid resume: topic mismatch */
     assert(cn_session_store_validate_resume(&store, id1, "Gatto", hash, 2, 500,
@@ -212,11 +215,89 @@ static void test_client_checkpoint(void)
     (void)rmdir(tmp_dir);
 }
 
+/* Animals-10 topics hold up to ~5000 files; a fixed 64 KiB buffer held ~1800. */
+static void test_large_checkpoint(void)
+{
+    char tmp_dir[] = "/tmp/cn_test_bigckpt_XXXXXX";
+    char topic_dir[1024];
+    struct cn_checkpoint ckpt, loaded;
+    uint8_t id[CN_TRANSFER_ID_SIZE] = {0x42};
+    uint8_t hash[CN_SHA256_SIZE] = {0x24};
+    uint8_t file_hash[CN_SHA256_SIZE];
+    uint32_t i;
+
+    assert(mkdtemp(tmp_dir) != NULL);
+    (void)snprintf(topic_dir, sizeof(topic_dir), "%s/Cane", tmp_dir);
+    assert(mkdir(topic_dir, 0777) == 0);
+
+    assert(cn_checkpoint_init(&ckpt, id, "Cane", hash) == 0);
+    for (i = 0; i < 5000; ++i) {
+        memset(file_hash, (int)(i & 0xffu), sizeof(file_hash));
+        assert(cn_checkpoint_add_completed(&ckpt, i, file_hash) == 0);
+    }
+    ckpt.file_index = 5000;
+    assert(cn_checkpoint_save(tmp_dir, "Cane", &ckpt) == 0);
+    assert(cn_checkpoint_load(tmp_dir, "Cane", &loaded) == 0);
+    assert(loaded.completed_count == 5000 && loaded.file_index == 5000);
+    assert(loaded.completed[4999].file_index == 4999);
+    assert(loaded.completed[4999].sha256[0] == (4999 & 0xffu));
+
+    cn_checkpoint_remove(tmp_dir, "Cane");
+    cn_checkpoint_free(&ckpt);
+    cn_checkpoint_free(&loaded);
+    (void)rmdir(topic_dir);
+    (void)rmdir(tmp_dir);
+}
+
+/* Resuming must never fill a missing prefix of the partial file with zeros. */
+static void test_resume_sink(void)
+{
+    char tmp_dir[] = "/tmp/cn_test_resume_XXXXXX";
+    char part_path[1024];
+    struct cn_manifest_entry entry;
+    struct cn_file_sink sink = CN_FILE_SINK_INIT;
+    struct stat st;
+    int dir_fd, fd;
+
+    assert(mkdtemp(tmp_dir) != NULL);
+    dir_fd = open(tmp_dir, O_RDONLY | O_DIRECTORY);
+    assert(dir_fd >= 0);
+    memset(&entry, 0, sizeof(entry));
+    entry.name = "photo.jpg";
+    entry.size = 100;
+    (void)snprintf(part_path, sizeof(part_path), "%s/.photo.jpg.part", tmp_dir);
+
+    /* No partial file at all */
+    assert(cn_file_sink_open_resume(&sink, dir_fd, &entry, 10) != 0);
+    assert(stat(part_path, &st) != 0);
+
+    /* Partial file shorter than the resume point */
+    fd = open(part_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    assert(fd >= 0 && write(fd, "12345", 5) == 5);
+    close(fd);
+    assert(cn_file_sink_open_resume(&sink, dir_fd, &entry, 10) != 0);
+
+    /* Longer partial file: the uncheckpointed tail is cut off */
+    fd = open(part_path, O_WRONLY | O_TRUNC);
+    assert(fd >= 0 && write(fd, "123456789012345", 15) == 15);
+    close(fd);
+    assert(cn_file_sink_open_resume(&sink, dir_fd, &entry, 10) == 0);
+    assert(sink.received == 10);
+    cn_file_sink_close(&sink);
+    assert(stat(part_path, &st) == 0 && st.st_size == 10);
+
+    (void)unlink(part_path);
+    close(dir_fd);
+    (void)rmdir(tmp_dir);
+}
+
 int main(void)
 {
     test_case2_protocol_encoding();
     test_session_store();
     test_client_checkpoint();
+    test_large_checkpoint();
+    test_resume_sink();
     printf("all Case 2 unit tests passed\n");
     return 0;
 }

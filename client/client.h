@@ -74,6 +74,8 @@ int cn_file_sink_open_resume(struct cn_file_sink *sink, int dir_fd,
 int cn_file_sink_write(struct cn_file_sink *sink, uint64_t offset,
                        const uint8_t *data, size_t length);
 enum cn_client_status cn_file_sink_commit(struct cn_file_sink *sink);
+/* Keeps the partial file for a later resume; abort deletes it. */
+void cn_file_sink_close(struct cn_file_sink *sink);
 void cn_file_sink_abort(struct cn_file_sink *sink);
 
 int cn_client_new_transfer_id(uint8_t transfer_id[CN_TRANSFER_ID_SIZE]);

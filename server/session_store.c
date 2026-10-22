@@ -242,21 +242,17 @@ int cn_session_store_validate_resume(struct cn_session_store *store,
         return -1;
     }
 
-    /* Requested position must not exceed acknowledged progress */
+    /* Resume no further than both sides have persisted. The client writes its
+       checkpoint before sending the ACK, so after a cut it is usually ahead of
+       the progress stored here; accept the earlier point instead of rejecting. */
     if ((req_file_index > curr->last_file_index) ||
         (req_file_index == curr->last_file_index && req_offset > curr->last_offset)) {
-        pthread_mutex_unlock(&store->lock);
-        if (out_reason && out_reason_cap > 0) {
-            (void)snprintf(out_reason, out_reason_cap,
-                           "requested resume at file %u offset %lu exceeds acknowledged progress %u offset %lu",
-                           req_file_index, (unsigned long)req_offset,
-                           curr->last_file_index, (unsigned long)curr->last_offset);
-        }
-        return -1;
+        *accepted_file_index = curr->last_file_index;
+        *accepted_offset = curr->last_offset;
+    } else {
+        *accepted_file_index = req_file_index;
+        *accepted_offset = req_offset;
     }
-
-    *accepted_file_index = req_file_index;
-    *accepted_offset = req_offset;
     curr->last_active = now;
 
     pthread_mutex_unlock(&store->lock);
