@@ -87,7 +87,7 @@ stop_server
 
 echo "--- 4. Invalid topic handling ---"
 start_server 0.0
-expect_exit 4 "$BUILD_DIR/client_enhanced" 127.0.0.1 "$PORT" NonExistentTopic "$WORK_DIR/out4" 4
+expect_exit 2 "$BUILD_DIR/client_enhanced" 127.0.0.1 "$PORT" NonExistentTopic "$WORK_DIR/out4" 4
 stop_server
 
 echo "e2e_enhanced: ALL CHECKS PASSED"

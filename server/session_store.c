@@ -6,6 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+static void free_session(struct cn_session *session)
+{
+    part1_free_manifest(&session->files);
+    free(session);
+}
+
 int cn_session_store_init(struct cn_session_store *store, uint32_t timeout_seconds)
 {
     if (store == NULL) return -1;
@@ -23,7 +29,7 @@ void cn_session_store_destroy(struct cn_session_store *store)
     curr = store->head;
     while (curr != NULL) {
         next = curr->next;
-        free(curr);
+        free_session(curr);
         curr = next;
     }
     store->head = NULL;
@@ -42,7 +48,7 @@ void cn_session_store_clean_expired(struct cn_session_store *store)
         struct cn_session *entry = *curr_ptr;
         if (difftime(now, entry->last_active) > (double)store->timeout_seconds) {
             *curr_ptr = entry->next;
-            free(entry);
+            free_session(entry);
         } else {
             curr_ptr = &entry->next;
         }
@@ -71,7 +77,7 @@ int cn_session_store_create(struct cn_session_store *store,
     }
 
     if (curr == NULL) {
-        curr = malloc(sizeof(*curr));
+        curr = calloc(1, sizeof(*curr));
         if (curr == NULL) {
             pthread_mutex_unlock(&store->lock);
             return -1;
@@ -79,6 +85,8 @@ int cn_session_store_create(struct cn_session_store *store,
         memcpy(curr->transfer_id, transfer_id, CN_TRANSFER_ID_SIZE);
         curr->next = store->head;
         store->head = curr;
+    } else {
+        part1_free_manifest(&curr->files);
     }
 
     (void)snprintf(curr->topic, sizeof(curr->topic), "%s", topic);
@@ -147,6 +155,70 @@ int cn_session_store_get_topic(struct cn_session_store *store,
     return found ? 0 : -1;
 }
 
+int cn_session_store_attach_files(struct cn_session_store *store,
+                                  const uint8_t transfer_id[CN_TRANSFER_ID_SIZE],
+                                  struct part1_manifest *manifest)
+{
+    struct cn_session *curr;
+    int found = 0;
+
+    if (store == NULL || transfer_id == NULL || manifest == NULL) return -1;
+
+    pthread_mutex_lock(&store->lock);
+    for (curr = store->head; curr != NULL; curr = curr->next) {
+        if (memcmp(curr->transfer_id, transfer_id, CN_TRANSFER_ID_SIZE) == 0) {
+            part1_free_manifest(&curr->files);
+            curr->files = *manifest;
+            memset(manifest, 0, sizeof(*manifest));
+            curr->last_active = time(NULL);
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&store->lock);
+    return found ? 0 : -1;
+}
+
+int cn_session_store_get_file(struct cn_session_store *store,
+                              const uint8_t transfer_id[CN_TRANSFER_ID_SIZE],
+                              uint32_t file_index,
+                              char topic_out[CN_MAX_TOPIC_SIZE + 1],
+                              char **name_out, uint64_t *size_out)
+{
+    struct cn_session *curr;
+    int result = -1;
+
+    if (store == NULL || transfer_id == NULL || topic_out == NULL || name_out == NULL ||
+        size_out == NULL) {
+        return -1;
+    }
+    *name_out = NULL;
+
+    pthread_mutex_lock(&store->lock);
+    cn_session_store_clean_expired(store);
+    for (curr = store->head; curr != NULL; curr = curr->next) {
+        if (memcmp(curr->transfer_id, transfer_id, CN_TRANSFER_ID_SIZE) != 0) {
+            continue;
+        }
+        curr->last_active = time(NULL);
+        if (file_index >= curr->files.count) {
+            result = -2;
+            break;
+        }
+        *name_out = strdup(curr->files.files[file_index].name);
+        if (*name_out == NULL) {
+            result = -3;
+            break;
+        }
+        *size_out = curr->files.files[file_index].size;
+        (void)snprintf(topic_out, CN_MAX_TOPIC_SIZE + 1, "%s", curr->topic);
+        result = 0;
+        break;
+    }
+    pthread_mutex_unlock(&store->lock);
+    return result;
+}
+
 void cn_session_store_remove(struct cn_session_store *store,
                              const uint8_t transfer_id[CN_TRANSFER_ID_SIZE])
 {
@@ -159,7 +231,7 @@ void cn_session_store_remove(struct cn_session_store *store,
         struct cn_session *entry = *curr_ptr;
         if (memcmp(entry->transfer_id, transfer_id, CN_TRANSFER_ID_SIZE) == 0) {
             *curr_ptr = entry->next;
-            free(entry);
+            free_session(entry);
             break;
         }
         curr_ptr = &entry->next;
