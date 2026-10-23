@@ -19,25 +19,6 @@ Results/       Raw CSV logs and graphs from the experiments
 sources/       Read-only assignment and design references (not edited)
 ```
 
-The generated submission has the exact graded top-level layout:
-
-```text
-FinalSubmission_Group_064_091/
-  FinalReport_Group_064_091.pdf
-  README.md
-  Part1/
-  Part2_Case1/
-  Part2_Case2/
-  Part2_Case2_Enhanced/
-  Results/
-```
-
-The instructor's sample design uses the descriptive message names `OK`,
-`START`, `FILE_HDR`, `CLOSE`, and `ERR`. The implemented equivalents are
-`MANIFEST`, request acceptance, `FILE_START`, `FILE_END`/`COMPLETE`, and
-`ERROR`. The full evaluator-facing mapping is in `docs/PROTOCOL.md`; the
-semantics match while retaining the tested 28-byte framed protocol.
-
 ## Build and test
 
 The project targets a POSIX environment with a C11 compiler, pthreads, and
