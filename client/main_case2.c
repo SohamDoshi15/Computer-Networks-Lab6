@@ -614,7 +614,7 @@ int main(int argc, char **argv)
                     status = CN_CLIENT_SERVER_ERROR;
                     (void)snprintf(report.message, sizeof(report.message),
                                    "server error: %.497s", err_text);
-                    break;
+                    goto attempt_done;
                 }
             }
 
@@ -705,7 +705,7 @@ int main(int argc, char **argv)
                 status = CN_CLIENT_SERVER_ERROR;
                 (void)snprintf(report.message, sizeof(report.message),
                                "server error: %.497s", err_text);
-                break;
+                goto attempt_done;
             }
 
             if (resp_hdr.message_type != CN_MSG_MANIFEST ||

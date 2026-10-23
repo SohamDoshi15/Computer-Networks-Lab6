@@ -192,5 +192,6 @@ All automated tests confirm correctness:
    * 4 parallel clients concurrently resuming.
    * Failure cases (unknown topic, invalid path traversal).
 3. `make submission`:
-   * Packages `Part1/single_threaded`, `Part1/multi_threaded`, `Part2_Case1`, and `Part2_Case2`.
+   * Packages `Part1`, `Part2_Case1`, `Part2_Case2`, and `Part2_Case2_Enhanced`.
+   * The `Part1` Makefile builds the multi-threaded server by default and also validates `make single`.
    * Verifies that each standalone case builds `./server` and `./client` cleanly.

@@ -212,8 +212,9 @@ the quantity that session management should reduce.
 
 ## 4. Validation measurements
 
-The CSV files and figures under `Results/` were regenerated on 22 October
-2026 from the current binaries. The validation workload contains ten random
+The primary comparison CSV files and figures under `Results/` were regenerated
+on 23 October 2026 after PR #8's resume, accounting and Enhanced range fixes.
+The validation workload contains ten random
 binary files totaling 12,582,910 bytes. Server and clients ran on one WSL2
 host over loopback; three repetitions were collected at connection failure
 probabilities 0, 0.2, and 0.5. `Results/README.md` records the exact scope and
@@ -221,9 +222,9 @@ commands.
 
 | p | mean attempts | mean goodput (MB/s) | mean redundant data (MB) |
 |---:|---:|---:|---:|
-| 0.0 | 1.00 | 21.54 | 0.00 |
-| 0.2 | 1.33 | 19.78 | 0.99 |
-| 0.5 | 1.33 | 25.63 | 2.18 |
+| 0.0 | 1.00 | 37.66 | 0.00 |
+| 0.2 | 1.33 | 29.92 | 0.99 |
+| 0.5 | 1.33 | 32.65 | 2.19 |
 
 The p=0.5 goodput is higher than p=0 in this small three-run sample because
 two of the three seeded runs completed without a cut. It is sampling noise,
@@ -239,5 +240,8 @@ persisting checkpoints.
 
 These loopback measurements verify the instrumentation and comparison
 pipeline. They do not replace the assignment's required Animals-10 run across
-three computers. Use `docs/THREE_COMPUTER_RUN.md` and rerun the same scripts
-on the lab machines before treating the performance section as final evidence.
+three computers. The earlier real `scoiattolo` Case 1 sweep is preserved as
+`Results/Part2_Case1_animals10_*.csv`; it is retained as evidence rather than
+being mislabeled as the new matched post-#8 comparison. Use
+`docs/THREE_COMPUTER_RUN.md` and rerun the matched cases on the lab machines
+before treating the performance section as final evidence.

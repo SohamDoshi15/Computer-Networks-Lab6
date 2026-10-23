@@ -1,7 +1,8 @@
 # Results provenance
 
-The CSV files and figures in this directory were generated from real program
-runs on 22 October 2026. They are not analytical or synthesized measurements.
+The primary comparison CSV files and figures in this directory were generated
+from real program runs on 23 October 2026 after PR #8's resume, accounting and
+Enhanced range fixes. They are not analytical or synthesized measurements.
 
 ## Current validation environment
 
@@ -18,6 +19,14 @@ runs on 22 October 2026. They are not analytical or synthesized measurements.
 The temporary workload was generated under `build/benchmark/` and is not part
 of the repository. Its purpose is repeatable integration and instrumentation
 validation, not to impersonate the Animals-10 data set.
+
+## Preserved Animals-10 evidence
+
+The `Part2_Case1_animals10_*.csv` files preserve the earlier real Case 1 sweep
+on the Animals-10 `scoiattolo` topic: 20 repetitions at each connection-mode
+probability from 0 through 0.9, a chunk-mode sweep, its Part 1 baseline, summary,
+and the complete per-connection log. They are intentionally separate from the
+post-#8 loopback comparison files so neither evidence set overwrites the other.
 
 ## Commands
 
@@ -37,4 +46,6 @@ The assignment asks for Animals-10 measurements using one server computer and
 clients on two other computers. These loopback results verify the complete
 measurement pipeline, but they are not a substitute for that required
 three-computer experiment. Run `docs/THREE_COMPUTER_RUN.md` on the lab machines
-and replace or augment these files before claiming that requirement is met.
+and add the canonical `Part2_Case1_lab_runs_*.csv` files before claiming that
+requirement is met. The report generator automatically combines those node files
+when they are present.

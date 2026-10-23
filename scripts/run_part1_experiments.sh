@@ -1,5 +1,5 @@
 #!/bin/sh
-# Local or three-computer-compatible Part 1 concurrency sweep.
+# Local loopback Part 1 concurrency sweep.
 # Usage: run_part1_experiments.sh <topics_root> <topic> [runs] [out_dir]
 set -eu
 
@@ -26,8 +26,12 @@ mkdir -p "$OUT"
 CSV=$OUT/Part1_runs.csv
 echo "server_mode,clients,run,topic,useful_bytes,completion_s,aggregate_throughput_MBps" >"$CSV"
 
-topic_bytes=$(find "$ROOT/$TOPIC" -maxdepth 1 -type f -printf '%s\n' | awk '{s += $1} END {print s + 0}')
+topic_bytes=$(find "$ROOT/$TOPIC" -maxdepth 1 -type f -exec cat {} + | wc -c | tr -d ' ')
 [ "$topic_bytes" -gt 0 ] || { echo "topic has no non-empty data: $ROOT/$TOPIC" >&2; exit 1; }
+
+now_ns() {
+    python3 -c 'import time; print(time.monotonic_ns())'
+}
 
 start_server() {
     binary=$1
@@ -57,7 +61,7 @@ for mode in single multi; do
             start_server "$binary"
             rm -rf "$WORK/out"
             mkdir -p "$WORK/out"
-            start_ns=$(date +%s%N)
+            start_ns=$(now_ns)
             pids=""
             i=1
             while [ "$i" -le "$clients" ]; do
@@ -70,7 +74,7 @@ for mode in single multi; do
             for pid in $pids; do
                 wait "$pid" || status=1
             done
-            end_ns=$(date +%s%N)
+            end_ns=$(now_ns)
             stop_server
             [ "$status" -eq 0 ] || { echo "$mode/$clients run $run failed" >&2; exit 1; }
             useful=$((topic_bytes * clients))

@@ -129,7 +129,7 @@ case1_csv = os.path.join(out_dir, "Part2_Case1_runs.csv")
 case1_pts = {}
 if os.path.exists(case1_csv):
     for r in csv.DictReader(open(case1_csv)):
-        if r.get("fault_mode") == "connection":
+        if r.get("fault_mode") == "connection" and r.get("status") == "0":
             p = float(r["failure_probability"])
             mbps = float(r.get("goodput_MBps", r.get("throughput_MBps", 0)))
             case1_pts.setdefault(p, []).append(mbps)

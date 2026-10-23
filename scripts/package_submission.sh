@@ -5,6 +5,20 @@ set -eu
 
 OUT=${1:-build/FinalSubmission_Group_064_091}
 REPORT=${FINAL_REPORT_PATH:-output/pdf/FinalReport_Group_064_091.pdf}
+out_parent=$(dirname "$OUT")
+out_name=$(basename "$OUT")
+archive="$out_parent/$out_name.tar.gz"
+
+# Remove a previous archive before any preflight failure can leave it looking current.
+rm -f "$archive"
+if [ ! -f "$REPORT" ]; then
+    echo "submission: missing final report: $REPORT" >&2
+    exit 1
+fi
+if [ ! -d Results ]; then
+    echo "submission: missing Results directory" >&2
+    exit 1
+fi
 
 # add_case <folder> <server main source> [client main source]
 add_case() {
@@ -51,18 +65,6 @@ client: @CLIENT_MAIN@ $(CLIENT_SOURCES) $(HEADERS)
 clean:
 	rm -f server client
 EOF
-
-if [ ! -f "$REPORT" ]; then
-    echo "submission: missing final report: $REPORT" >&2
-    exit 1
-fi
-if [ ! -d Results ]; then
-    echo "submission: missing Results directory" >&2
-    exit 1
-fi
-cp "$REPORT" "$OUT/FinalReport_Group_064_091.pdf"
-mkdir -p "$OUT/Results"
-cp -R Results/. "$OUT/Results/"
 }
 
 add_part1() {
@@ -119,6 +121,9 @@ add_part1
 add_case Part2_Case1 server/server_case1.c client/main_case1.c
 add_case Part2_Case2 server/server_case2.c client/main_case2.c
 add_case Part2_Case2_Enhanced server/server_enhanced.c client/main_enhanced.c
+cp "$REPORT" "$OUT/FinalReport_Group_064_091.pdf"
+mkdir -p "$OUT/Results"
+cp -R Results/. "$OUT/Results/"
 
 cat >"$OUT/README.md" <<'EOF'
 # IT305 Socket Programming Project - Groups 064 and 091
@@ -191,7 +196,9 @@ With session management, the client persists progress to a durable atomic checkp
 `<output_dir>/<topic>/.checkpoint`. After an interrupted connection, it truncates
 any uncheckpointed tail and sends `RESUME` with its checkpointed state. The server
 validates the session against its in-memory SessionStore and replies `RESUME_OK`,
-streaming only the remaining bytes and reducing duplicate transmission to near zero.
+streaming from the earlier of the client's durable checkpoint and the server's
+last stored ACK. This bounds retransmission to unacknowledged in-flight data;
+the measured amount depends on the checkpoint interval and ACK window.
 If the server was restarted or the session expired, the client safely falls back to `GET`.
 
 | Client exit | Meaning |
@@ -215,6 +222,13 @@ for makefile in $(find "$OUT" -name Makefile | sort); do
         echo "submission: ${case_dir#"$OUT"/} does not build" >&2
         exit 1
     fi
+    if [ "$(basename "$case_dir")" = Part1 ] &&
+       ! (cd "$scratch" && make clean >/dev/null 2>&1 && make single >/dev/null 2>&1 &&
+          make clean >/dev/null 2>&1 && make multi >/dev/null 2>&1); then
+        rm -rf "$scratch"
+        echo "submission: Part1 single or multi mode does not build" >&2
+        exit 1
+    fi
     produced=$(cd "$scratch" && find . -maxdepth 1 -type f ! -name Makefile | sort | tr '\n' ' ')
     rm -rf "$scratch"
     if [ "$produced" != "./client ./server " ]; then
@@ -224,10 +238,6 @@ for makefile in $(find "$OUT" -name Makefile | sort); do
     echo "submission: ${case_dir#"$OUT"/} builds ./server and ./client"
 done
 
-out_parent=$(dirname "$OUT")
-out_name=$(basename "$OUT")
-archive="$out_parent/$out_name.tar.gz"
-rm -f "$archive"
 tar -czf "$archive" -C "$out_parent" "$out_name"
 
 tar -tzf "$archive" | grep -q "^$out_name/FinalReport_Group_064_091.pdf$" || {
@@ -235,7 +245,7 @@ tar -tzf "$archive" | grep -q "^$out_name/FinalReport_Group_064_091.pdf$" || {
     exit 1
 }
 for required in Part1 Part2_Case1 Part2_Case2 Part2_Case2_Enhanced Results README.md; do
-    tar -tzf "$archive" | grep -q "^$out_name/$required" || {
+    tar -tzf "$archive" | grep -Eq "^$out_name/$required(/|\$)" || {
         echo "submission: archive is missing $required" >&2
         exit 1
     }

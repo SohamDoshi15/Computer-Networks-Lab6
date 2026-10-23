@@ -46,13 +46,18 @@ The helper uses it to confirm every file arrived intact.
 **Both client computers, started at the same time** (3 clients each in this example):
 
 ```sh
-sh scripts/case1_client_node.sh <server_ip> 9000 scoiattolo 3 0.5 ~/scoiattolo.sha256
+CN_FAULT_SEED=42 RUN_LABEL=1 \
+    sh scripts/case1_client_node.sh <server_ip> 9000 scoiattolo 3 0.5 ~/scoiattolo.sha256
 ```
 
 Each client node prints one `METRICS` line per client and `all files match the
-server`. It also appends the metrics to
-`Results/Part2_Case1_lab_p0.5_<hostname>.csv`. Stop the server with Ctrl-C,
-then repeat for the next probability: 0, 0.1, 0.2, ... 0.9.
+server`. It also appends the metrics, using the same columns as the loopback
+runner, to `Results/Part2_Case1_lab_runs_<hostname>.csv`. Increase `RUN_LABEL`
+for each repetition and keep `CN_FAULT_SEED` equal to the seed used by the
+server. Stop the server with Ctrl-C, then repeat for the next probability: 0,
+0.1, 0.2, ... 0.9. Copy both client-node CSVs into the final `Results/`
+directory; the report generator discovers and combines every
+`Part2_Case1_lab_runs_*.csv` file.
 
 Sanity checks after each run:
 

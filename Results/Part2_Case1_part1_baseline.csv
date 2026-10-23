@@ -1,4 +1,4 @@
 server,run,topic,files,useful_bytes,completion_s,goodput_MBps
-server_multi,1,cane,10,12582910,0.497,25.30
-server_multi,2,cane,10,12582910,0.549,22.90
-server_multi,3,cane,10,12582910,0.785,16.03
+server_multi,1,cane,10,12582910,0.305,41.23
+server_multi,2,cane,10,12582910,0.305,41.24
+server_multi,3,cane,10,12582910,0.408,30.84

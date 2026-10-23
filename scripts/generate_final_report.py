@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import os
 from collections import defaultdict
+from datetime import date
 from pathlib import Path
 from statistics import mean, pstdev
 from xml.sax.saxutils import escape
@@ -51,11 +52,29 @@ def read_csv(name: str) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def read_csv_glob(pattern: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for path in sorted(RESULTS.glob(pattern)):
+        with path.open(newline="", encoding="utf-8") as handle:
+            rows.extend(csv.DictReader(handle))
+    return rows
+
+
+def numeric_key(values):
+    return tuple(float(value) for value in values)
+
+
 def grouped_means(rows, keys, metric, predicate=lambda _: True):
     groups = defaultdict(list)
     for row in rows:
         if predicate(row):
-            groups[tuple(row[key] for key in keys)].append(float(row[metric]))
+            group = []
+            for key in keys:
+                value = row[key]
+                if key in {"clients", "parallel_N", "failure_probability"}:
+                    value = f"{float(value):g}"
+                group.append(value)
+            groups[tuple(group)].append(float(row[metric]))
     return {key: (mean(vals), pstdev(vals), len(vals)) for key, vals in groups.items()}
 
 
@@ -113,7 +132,10 @@ def paragraph(text, style):
 
 def build_report() -> None:
     part1 = grouped_means(read_csv("Part1_runs.csv"), ("server_mode", "clients"), "aggregate_throughput_MBps")
-    case1_rows = read_csv("Part2_Case1_runs.csv")
+    case1_loopback_rows = read_csv("Part2_Case1_runs.csv")
+    case1_lab_rows = read_csv_glob("Part2_Case1_lab_runs_*.csv")
+    case1_rows = case1_lab_rows or case1_loopback_rows
+    case1_source = "three-computer Animals-10" if case1_lab_rows else "same-host WSL2 loopback"
     case2_rows = read_csv("Part2_Case2_runs.csv")
     enhanced_rows = read_csv("Part2_Case2_Enhanced_runs.csv")
     case1 = grouped_means(
@@ -127,6 +149,15 @@ def build_report() -> None:
     enhanced = grouped_means(
         enhanced_rows, ("parallel_N", "failure_probability"), "throughput_mbps"
     )
+    case1_redundancy = grouped_means(
+        case1_rows, ("failure_probability",), "redundant_bytes",
+        lambda r: r["fault_mode"] == "connection" and r["status"] == "0",
+    )
+    case2_redundancy = grouped_means(
+        case2_rows, ("failure_probability",), "redundant_bytes",
+        lambda r: r["fault_mode"] == "connection" and r["status"] == "0",
+    )
+    animals10_archive_present = any(RESULTS.glob("Part2_Case1_animals10_*.csv"))
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     styles = getSampleStyleSheet()
@@ -197,7 +228,7 @@ def build_report() -> None:
     S += [paragraph("Groups 064 and 091", styles["Subtitle"]), Spacer(1, 0.4 * cm)]
     contributions = [
         ["Member", "Roll number", "Individual contribution"],
-        ["Purva Kaneria", "20241171", "Enhanced Case 2 parallel ranges, experiment harness, plots and analysis."],
+        ["Purva Kaneria", "202401171", "Enhanced Case 2 parallel ranges, experiment harness, plots and analysis."],
         ["Soham Doshi", "202401208", "Part I topic discovery, safe paths, sequential and multi-threaded servers."],
         ["Shaurya Shekhawat", "202401197", "Case 2 session store, durable checkpoints and resume protocol."],
         ["Om Patel", "202401439", "Shared protocol, integration, documentation, hardening and final-package checks."],
@@ -205,7 +236,10 @@ def build_report() -> None:
         ["Tirth Patel", "202401227", "Case 1 fault injection, restart client, metrics and experiment workflow."],
     ]
     S += [table(contributions, [3.0 * cm, 2.2 * cm, 11.2 * cm], font_size=7.2), Spacer(1, 0.45 * cm)]
-    S += [paragraph("Report generated from repository state and measured validation runs on 22 October 2026.", styles["Smallx"])]
+    S += [paragraph(
+        f"Report generated from repository state and measured validation runs on {date.today().strftime('%d %B %Y')}.",
+        styles["Smallx"],
+    )]
     S += [PageBreak()]
 
     S += [paragraph("Executive Summary", styles["H1x"])]
@@ -218,7 +252,11 @@ def build_report() -> None:
         styles["Bodyx"],
     )]
     S += [paragraph(
-        "Evidence boundary: the performance figures in this report are real same-host WSL2 loopback measurements on a 12.58 MB validation workload. They verify the instrumentation and relative behavior, but they are not the assignment's required Animals-10 experiment using one server computer and two client computers. That final physical experiment remains the only unresolved submission requirement.",
+        f"Evidence boundary: the current comparison figures use {case1_source} measurements. "
+        "The same-host runs verify instrumentation and relative behavior but are not the assignment's required "
+        "Animals-10 experiment using one server computer and two client computers. "
+        + ("Earlier real Animals-10 Case 1 measurements are preserved separately in Results/. " if animals10_archive_present else "")
+        + "A complete matched physical experiment across all cases remains required.",
         styles["Callout"],
     )]
     S += [paragraph("The cover records each member's primary contribution. Repository history and module ownership support those lines; every member remains jointly responsible for the whole system and viva.", styles["Smallx"])]
@@ -233,7 +271,7 @@ def build_report() -> None:
         ["Enhanced parallel connections", "N workers request non-overlapping ranges and reassemble with pwrite", "Pass"],
         ["Per-case Makefile builds server/client", "Generated Part1 and three Part2 folders build exactly two executables", "Pass"],
         ["Raw logs and graphs for all cases", "CSV and PNG outputs exist and are reproducible", "Local validation"],
-        ["Three-computer Animals-10 experiment", "Procedure is documented; current repository does not contain those final measurements", "Pending"],
+        ["Three-computer Animals-10 experiment", "Procedure and import path are documented; preserved Case 1 Animals-10 data is not a complete matched all-case lab run", "Pending"],
     ]
     S += [table(compliance, [4.6 * cm, 9.6 * cm, 2.1 * cm], font_size=7.7)]
     S += [paragraph("Required interfaces", styles["H2x"])]
@@ -281,14 +319,27 @@ def build_report() -> None:
         styles["Bodyx"],
     )]
     p1_table = [["Mode", "Clients", "Mean MB/s", "Std. dev."]]
-    for mode in ("single", "multi"):
-        for clients in ("1", "2", "4"):
+    modes = sorted({mode for mode, _ in part1}, key=lambda mode: (mode != "single", mode))
+    for mode in modes:
+        clients_present = sorted((clients for current_mode, clients in part1 if current_mode == mode), key=float)
+        for clients in clients_present:
             avg, dev, _ = part1[(mode, clients)]
             p1_table.append([mode.title(), clients, f"{avg:.2f}", f"{dev:.2f}"])
     S += [table(p1_table, [4.0 * cm, 3.2 * cm, 4.0 * cm, 4.0 * cm])]
     S += [Spacer(1, 0.25 * cm), report_image("Part1_throughput.png")]
+    multi_points = sorted(
+        ((int(clients), values[0]) for (mode, clients), values in part1.items() if mode == "multi")
+    )
+    single_rates = [values[0] for (mode, _), values in part1.items() if mode == "single"]
+    first_clients, first_rate = multi_points[0]
+    last_clients, last_rate = multi_points[-1]
+    speedup = last_rate / first_rate if first_rate else 0.0
     S += [paragraph(
-        "In loopback validation, sequential throughput stayed near 24-26 MB/s as client count increased because requests were serialized. The multi-threaded server rose from 25.47 MB/s at one client to 80.74 MB/s at four clients, a 3.17x aggregate increase. This is a host-local concurrency result, not a lab-network capacity claim.",
+        f"In loopback validation, sequential aggregate throughput ranged from {min(single_rates):.2f} to "
+        f"{max(single_rates):.2f} MB/s because requests were serialized. The multi-threaded server rose from "
+        f"{first_rate:.2f} MB/s at {first_clients} client(s) to {last_rate:.2f} MB/s at {last_clients} "
+        f"clients, a {speedup:.2f}x aggregate increase. This is a host-local concurrency result, not a "
+        "lab-network capacity claim.",
         styles["Bodyx"],
     )]
 
@@ -298,13 +349,25 @@ def build_report() -> None:
         styles["Bodyx"],
     )]
     c1_table = [["Failure p", "Mean goodput MB/s", "Std. dev.", "Runs"]]
-    for p in ("0", "0.2", "0.5"):
+    for (p,) in sorted(case1, key=numeric_key):
         avg, dev, count = case1[(p,)]
         c1_table.append([p, f"{avg:.2f}", f"{dev:.2f}", str(count)])
     S += [table(c1_table, [4.0 * cm] * 4)]
     S += [Spacer(1, 0.2 * cm), report_image("Part2_Case1_overhead.png")]
+    c1_high_key = max(case1, key=numeric_key)
+    c1_high_p = c1_high_key[0]
+    c1_high_rows = [
+        row for row in case1_rows
+        if row["fault_mode"] == "connection" and row["status"] == "0"
+        and float(row["failure_probability"]) == float(c1_high_p)
+    ]
+    c1_no_cut = sum(row["attempts"] == "1" for row in c1_high_rows)
+    c1_red_mb = case1_redundancy[c1_high_key][0] / 1e6
     S += [paragraph(
-        "The p=0.5 mean goodput is noisy because two of three seeded runs had no cut. The byte metric remains diagnostic: mean redundant data rose to 2.18 MB. Theory predicts geometric attempts and expected redundant data pD/(2(1-p)); more repetitions are needed for stable high-p timing.",
+        f"At the highest measured point (p={c1_high_p}), {c1_no_cut} of {len(c1_high_rows)} successful "
+        f"runs completed in one attempt and mean redundant data was {c1_red_mb:.2f} MB. The byte metric is "
+        "therefore more diagnostic than a small-sample timing result. Theory predicts geometric attempts and "
+        "expected redundant data pD/(2(1-p)); more repetitions are needed for stable high-p timing.",
         styles["Bodyx"],
     )]
 
@@ -314,13 +377,22 @@ def build_report() -> None:
         styles["Bodyx"],
     )]
     c2_table = [["Failure p", "Mean goodput MB/s", "Std. dev.", "Runs"]]
-    for p in ("0", "0.2", "0.5"):
+    for (p,) in sorted(case2, key=numeric_key):
         avg, dev, count = case2[(p,)]
         c2_table.append([p, f"{avg:.2f}", f"{dev:.2f}", str(count)])
     S += [table(c2_table, [4.0 * cm] * 4)]
     S += [Spacer(1, 0.25 * cm), report_image("Part2_Case2_overhead.png")]
+    common_case_ps = set(case1) & set(case2)
+    comparison_key = max(common_case_ps, key=numeric_key)
+    c1_common_red = case1_redundancy[comparison_key][0]
+    c2_common_red = case2_redundancy[comparison_key][0]
+    reduction = (1.0 - c2_common_red / c1_common_red) * 100.0 if c1_common_red else 0.0
     S += [paragraph(
-        "Mean redundant data increased with p but remained bounded by acknowledged progress rather than requiring every completed file to be retransmitted. The validation environment makes durable fsync checkpoints expensive, so Case 2 goodput is lower than Case 1 in these short loopback runs. This is a real implementation tradeoff: durability reduces re-sent bytes but adds synchronous storage work.",
+        f"At p={comparison_key[0]}, Case 2 averaged {c2_common_red / 1e6:.2f} MB of redundant data "
+        f"versus {c1_common_red / 1e6:.2f} MB for Case 1, a {reduction:.1f}% reduction. Progress loss is "
+        "bounded by the server's last stored ACK rather than requiring every completed file to be retransmitted. "
+        "Durable fsync checkpoints add storage cost, so lower re-sent bytes do not automatically imply higher "
+        "goodput on short loopback runs.",
         styles["Bodyx"],
     )]
 
@@ -329,13 +401,38 @@ def build_report() -> None:
         "The enhanced client obtains the manifest, partitions files into disjoint half-open ranges, preallocates temporary files, and schedules ranges across N worker connections. Workers write with pwrite at explicit offsets, so independent ranges do not race on a shared file position. When a connection drops, only that range reconnects from its current offset; completed ranges and other workers continue.",
         styles["Bodyx"],
     )]
-    enhanced_table = [["p", "N=1 MB/s", "N=2 MB/s", "N=4 MB/s"]]
-    for p in ("0", "0.2", "0.5"):
-        enhanced_table.append([p] + [f"{enhanced[(n, p)][0]:.2f}" for n in ("1", "2", "4")])
-    S += [table(enhanced_table, [4.0 * cm] * 4)]
+    enhanced_ns = sorted({n for n, _ in enhanced}, key=float)
+    enhanced_ps = sorted({p for _, p in enhanced}, key=float)
+    enhanced_table = [["p"] + [f"N={n} MB/s" for n in enhanced_ns]]
+    for p in enhanced_ps:
+        enhanced_table.append([p] + [
+            f"{enhanced[(n, p)][0]:.2f}" if (n, p) in enhanced else "-" for n in enhanced_ns
+        ])
+    S += [table(enhanced_table, [16.0 * cm / len(enhanced_table[0])] * len(enhanced_table[0]))]
     S += [Spacer(1, 0.2 * cm), report_image("Part2_Case2_Enhanced_throughput.png")]
+    clean_p = min(enhanced_ps, key=float)
+    first_n, last_n = enhanced_ns[0], enhanced_ns[-1]
+    clean_first = enhanced[(first_n, clean_p)][0]
+    clean_last = enhanced[(last_n, clean_p)][0]
+    clean_speedup = clean_last / clean_first if clean_first else 0.0
+    common_enhanced_ps = set(enhanced_ps)
+    for n in enhanced_ns:
+        common_enhanced_ps &= {p for current_n, p in enhanced if current_n == n}
+    fault_ps = sorted((p for p in common_enhanced_ps if float(p) > 0), key=float)
+    fault_text = ""
+    if fault_ps:
+        fault_p = fault_ps[0]
+        fault_first = enhanced[(first_n, fault_p)][0]
+        fault_last = enhanced[(last_n, fault_p)][0]
+        fault_speedup = fault_last / fault_first if fault_first else 0.0
+        fault_text = f" At p={fault_p}, the corresponding speedup was {fault_speedup:.2f}x."
+    max_enhanced_redundant = max(float(row["redundant_bytes"]) for row in enhanced_rows)
     S += [paragraph(
-        "At p=0, N=4 reached 6.86 MB/s versus 2.39 MB/s for N=1 (2.88x). At p=0.2, the measured speedup was 2.92x. Throughput declined with faults, but unaffected workers continued. No complete DATA payload was received twice in this measured sweep, so redundant payload bytes were zero while control overhead increased slightly.",
+        f"At p={clean_p}, N={last_n} reached {clean_last:.2f} MB/s versus {clean_first:.2f} MB/s for "
+        f"N={first_n} ({clean_speedup:.2f}x)." + fault_text +
+        f" Throughput changes with faults, but unaffected workers continue. The maximum complete DATA payload "
+        f"redundancy observed in this sweep was {max_enhanced_redundant / 1e6:.2f} MB; control framing remains "
+        "visible separately in wire overhead.",
         styles["Bodyx"],
     )]
 
@@ -391,7 +488,7 @@ def build_report() -> None:
     S += [table(deviations, [4.1 * cm, 12.1 * cm], font_size=8)]
     S += [paragraph("Required final physical run", styles["H2x"])]
     S += [paragraph(
-        "1. Copy the same commit to three Linux computers. 2. Put the Animals-10 raw-img root on the server computer. 3. Run the server on one machine and concurrent clients on the other two. 4. Repeat matched Part I and Part II sweeps, recording commit hash, host specifications, topic size, client count, p, N and seed. 5. Copy the raw CSVs into Results/, regenerate every graph, regenerate this PDF, then rerun make submission and inspect the extracted archive.",
+        "1. Copy the same commit to three Linux computers. 2. Put the Animals-10 raw-img root on the server computer. 3. Run the server on one machine and concurrent clients on the other two. 4. Repeat matched Part I and Part II sweeps, recording commit hash, host specifications, topic size, client count, p, N and seed. 5. Copy the canonical Part2_Case1_lab_runs_*.csv files and the other raw CSVs into Results/. 6. Regenerate every graph and this PDF, then rerun make submission and inspect the extracted archive.",
         styles["Bodyx"],
     )]
     S += [paragraph(
