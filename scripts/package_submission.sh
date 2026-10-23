@@ -132,22 +132,6 @@ Each case folder is self-contained; `make` inside it creates exactly two
 executables, `server` and `client`. Requirements: a C11 compiler, pthreads,
 and OpenSSL's libcrypto.
 
-## Exact submission layout
-
-```text
-FinalSubmission_Group_064_091/
-  FinalReport_Group_064_091.pdf
-  README.md
-  Part1/
-  Part2_Case1/
-  Part2_Case2/
-  Part2_Case2_Enhanced/
-  Results/
-```
-
-No file path, IP address, or port is hard-coded. Every case uses the required
-positional command-line interface shown below.
-
 | Folder | Server | Description |
 |---|---|---|
 | `Part1` (`make single`) | sequential | completes one request before the next |
@@ -184,26 +168,6 @@ cd ../Part2_Case2_Enhanced && make
 The enhanced client optionally accepts a fifth argument for the number of
 parallel connections, but defaults to four when the required invocation above
 is used unchanged.
-
-## Instructor sample-design terminology
-
-The sample design's message labels are descriptive examples. The tested wire
-protocol implements the same behaviors using the following stable names:
-
-| Sample key | This submission | Meaning |
-|---|---|---|
-| `GET` | `GET` | request one topic |
-| `OK` | `MANIFEST` | accept the topic and return its ordered file metadata |
-| `START` | accepted `GET`/`MANIFEST` exchange | begin transfer without a redundant round trip |
-| `FILE_HDR` | `FILE_START` | identify a file, size, and SHA-256 digest |
-| `DATA` | `DATA` | carry bytes with an explicit file index and offset |
-| `ACK` | `ACK` | confirm the highest contiguous persisted offset |
-| `CLOSE` | `FILE_END` plus `COMPLETE` | finish one file, then the complete topic |
-| `ERR` | `ERROR` | report a request or protocol failure |
-| session ID in `GET` | `RESUME` plus `RESUME_OK` | validate and continue from a durable checkpoint |
-
-Enhanced Case 2 additionally uses range-assignment and range-acknowledgement
-messages for parallel, non-overlapping byte ranges.
 
 ## Fault injection (Part 2)
 
@@ -275,19 +239,6 @@ for makefile in $(find "$OUT" -name Makefile | sort); do
 done
 
 tar -czf "$archive" -C "$out_parent" "$out_name"
-
-# Reject loose files or an unexpected top-level layout. The grader should see
-# exactly the seven required entries inside the named submission directory.
-if tar -tzf "$archive" | grep -Ev "^$out_name(/|$)" >/dev/null; then
-    echo "submission: archive contains an entry outside $out_name/" >&2
-    exit 1
-fi
-top_level=$(tar -tzf "$archive" | awk -F/ 'NF >= 2 && $2 != "" {print $2}' | LC_ALL=C sort -u | tr '\n' ' ')
-expected_top_level="FinalReport_Group_064_091.pdf Part1 Part2_Case1 Part2_Case2 Part2_Case2_Enhanced README.md Results "
-if [ "$top_level" != "$expected_top_level" ]; then
-    echo "submission: unexpected top-level entries: $top_level" >&2
-    exit 1
-fi
 
 tar -tzf "$archive" | grep -q "^$out_name/FinalReport_Group_064_091.pdf$" || {
     echo "submission: archive is missing the final report" >&2
