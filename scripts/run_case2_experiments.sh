@@ -55,6 +55,24 @@ stop_server() {
     SERVER_PID=
 }
 
+wait_for_server_rows() {
+    expected=$1
+    tries=0
+    while :; do
+        rows=0
+        if [ -f "$WORK/server.csv" ]; then
+            rows=$(( $(wc -l <"$WORK/server.csv") - 1 ))
+        fi
+        [ "$rows" -ge "$expected" ] && return 0
+        tries=$((tries + 1))
+        if [ "$tries" -gt 200 ]; then
+            echo "server metrics timeout: expected $expected row(s), found $rows" >&2
+            return 1
+        fi
+        sleep 0.05
+    done
+}
+
 metrics_to_csv() {
     sed -n 's/^METRICS //p' | tr ' ' '\n' | sed 's/^[^=]*=//' | paste -sd, -
 }
@@ -73,8 +91,11 @@ run_sweep() {
             CN_QUIET=1 "$BUILD_DIR/client_case2" 127.0.0.1 "$PORT" "$TOPIC" "$WORK/out" \
                 >"$WORK/client.log" 2>"$WORK/client.err"
             set -e
-            stop_server
             row=$(metrics_to_csv <"$WORK/client.log")
+            attempts=$(sed -n 's/^METRICS //p' "$WORK/client.log" | tr ' ' '\n' | sed -n 's/^attempts=//p')
+            [ -n "$attempts" ] || { cat "$WORK/client.err" >&2; exit 1; }
+            wait_for_server_rows "$attempts"
+            stop_server
             echo "$mode,$p,$run,$seed,$TOPIC,$row" >>"$CLIENT_CSV"
             if [ ! -f "$SERVER_CSV" ]; then
                 echo "run,seed,$(head -1 "$WORK/server.csv")" >"$SERVER_CSV"

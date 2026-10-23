@@ -206,6 +206,8 @@ static void test_client_checkpoint(void)
     assert((uint64_t)st.st_size == 10);
 
     cn_checkpoint_remove(tmp_dir, "Elefante");
+    cn_checkpoint_free(&loaded);
+    memset(&loaded, 0, sizeof(loaded));
     assert(cn_checkpoint_load(tmp_dir, "Elefante", &loaded) != 0);
 
     cn_checkpoint_free(&ckpt);
