@@ -225,6 +225,15 @@ static void truncate_any_part_files(const char *output_dir, const char *topic,
     closedir(d);
 }
 
+/* Forgets the checkpointed bytes of one file so the next RESUME restarts it at offset 0. */
+static void restart_file(const char *output_dir, const char *topic,
+                         struct cn_checkpoint *ckpt, uint32_t file_index)
+{
+    ckpt->file_index = file_index;
+    ckpt->contiguous_offset = 0;
+    (void)cn_checkpoint_save(output_dir, topic, ckpt);
+}
+
 static enum cn_client_status receive_topic_files(
     int socket_fd, const uint8_t transfer_id[16], const char *output_dir,
     const char *topic, struct cn_manifest *manifest, uint32_t start_index,
@@ -270,8 +279,13 @@ static enum cn_client_status receive_topic_files(
 
         if (file_start_offset > 0) {
             if (cn_file_sink_open_resume(&sink, dir_fd, entry, file_start_offset) != 0) {
-                status = CN_CLIENT_LOCAL_IO;
-                (void)snprintf(report->message, sizeof(report->message), "cannot open .part file for resume");
+                /* The partial file is missing or shorter than the resume point, for
+                   example because the file was already renamed into place before the
+                   server stored its final ACK. Retry with this file from the start. */
+                restart_file(output_dir, topic, ckpt, entry->file_index);
+                status = CN_CLIENT_INTEGRITY;
+                (void)snprintf(report->message, sizeof(report->message),
+                               "no partial data to resume %s; restarting the file", entry->name);
                 goto done;
             }
         } else {
@@ -282,13 +296,14 @@ static enum cn_client_status receive_topic_files(
             }
         }
 
-        /* Receive DATA frames until FILE_END */
+        /* Receive DATA frames until FILE_END. On failure the partial file is kept:
+           the next attempt truncates it to the checkpoint and resumes from there. */
         for (;;) {
             if (cn_recv_frame(socket_fd, &header, &payload) != CN_PROTOCOL_OK) {
                 free(payload);
                 status = CN_CLIENT_NETWORK;
                 (void)snprintf(report->message, sizeof(report->message), "server disconnected in DATA");
-                cn_file_sink_abort(&sink);
+                cn_file_sink_close(&sink);
                 goto done;
             }
 
@@ -296,7 +311,7 @@ static enum cn_client_status receive_topic_files(
                 free(payload);
                 status = CN_CLIENT_PROTOCOL;
                 (void)snprintf(report->message, sizeof(report->message), "mismatched transfer ID in data frame");
-                cn_file_sink_abort(&sink);
+                cn_file_sink_close(&sink);
                 goto done;
             }
 
@@ -313,7 +328,17 @@ static enum cn_client_status receive_topic_files(
                     free(payload);
                     status = CN_CLIENT_PROTOCOL;
                     (void)snprintf(report->message, sizeof(report->message), "malformed DATA frame");
-                    cn_file_sink_abort(&sink);
+                    cn_file_sink_close(&sink);
+                    goto done;
+                }
+                /* The checkpoint records a contiguous prefix, so DATA must not skip ahead. */
+                if (data_offset != sink.received) {
+                    free(payload);
+                    status = CN_CLIENT_PROTOCOL;
+                    (void)snprintf(report->message, sizeof(report->message),
+                                   "DATA for %s at offset %" PRIu64 ", expected %" PRIu64,
+                                   entry->name, data_offset, sink.received);
+                    cn_file_sink_close(&sink);
                     goto done;
                 }
 
@@ -321,7 +346,7 @@ static enum cn_client_status receive_topic_files(
                     free(payload);
                     status = CN_CLIENT_LOCAL_IO;
                     (void)snprintf(report->message, sizeof(report->message), "failed to write to .part file");
-                    cn_file_sink_abort(&sink);
+                    cn_file_sink_close(&sink);
                     goto done;
                 }
                 free(payload);
@@ -330,13 +355,14 @@ static enum cn_client_status receive_topic_files(
                 report->data_bytes_received += data_len;
                 unacked_bytes += data_len;
 
-                /* Durable checkpoint at configured chunk boundary */
+                /* Durable checkpoint at configured chunk boundary; ACK only what is
+                   flushed and checkpointed, so the server never gets ahead of us. */
                 if (unacked_bytes >= ckpt_threshold && data_offset + data_len < entry->size) {
-                    (void)fsync(sink.fd);
                     ckpt->file_index = entry->file_index;
                     ckpt->contiguous_offset = data_offset + data_len;
-                    (void)cn_checkpoint_save(output_dir, topic, ckpt);
-                    (void)send_ack(socket_fd, transfer_id, entry->file_index, data_offset + data_len);
+                    if (fsync(sink.fd) == 0 && cn_checkpoint_save(output_dir, topic, ckpt) == 0) {
+                        (void)send_ack(socket_fd, transfer_id, entry->file_index, data_offset + data_len);
+                    }
                     unacked_bytes = 0;
                 }
 
@@ -349,7 +375,7 @@ static enum cn_client_status receive_topic_files(
                     free(payload);
                     status = CN_CLIENT_PROTOCOL;
                     (void)snprintf(report->message, sizeof(report->message), "malformed FILE_END frame");
-                    cn_file_sink_abort(&sink);
+                    cn_file_sink_close(&sink);
                     goto done;
                 }
                 free(payload);
@@ -359,7 +385,9 @@ static enum cn_client_status receive_topic_files(
                 status = cn_file_sink_commit(&sink);
                 if (status != CN_CLIENT_OK) {
                     (void)snprintf(report->message, sizeof(report->message), "file integrity check failed for %s", entry->name);
+                    /* The partial data is bad, so its checkpoint is worthless too. */
                     cn_file_sink_abort(&sink);
+                    restart_file(output_dir, topic, ckpt, entry->file_index);
                     goto done;
                 }
 
@@ -387,7 +415,7 @@ static enum cn_client_status receive_topic_files(
                 free(payload);
                 status = CN_CLIENT_PROTOCOL;
                 (void)snprintf(report->message, sizeof(report->message), "unexpected frame type %u", header.message_type);
-                cn_file_sink_abort(&sink);
+                cn_file_sink_close(&sink);
                 goto done;
             }
         }
@@ -499,7 +527,7 @@ int main(int argc, char **argv)
 
     while (metrics.attempts < max_attempts || max_attempts == 0) {
         int socket_fd;
-        struct cn_io_counters io;
+        struct cn_io_counters io = {0, 0};
         metrics.attempts += 1;
         memset(&report, 0, sizeof(report));
 
@@ -579,11 +607,14 @@ int main(int argc, char **argv)
                     has_checkpoint = 0;
                     (void)cn_client_new_transfer_id(transfer_id);
                     status = CN_CLIENT_NETWORK;
+                    (void)snprintf(report.message, sizeof(report.message),
+                                   "RESUME rejected; restarting with GET");
                     goto attempt_done;
                 } else {
                     status = CN_CLIENT_SERVER_ERROR;
-                    (void)snprintf(report.message, sizeof(report.message), "server error: %s", err_text);
-                    break;
+                    (void)snprintf(report.message, sizeof(report.message),
+                                   "server error: %.497s", err_text);
+                    goto attempt_done;
                 }
             }
 
@@ -594,16 +625,31 @@ int main(int argc, char **argv)
                 size_t manifest_len = 0;
                 struct cn_manifest manifest = {NULL, 0, 0};
                 const char *reason = NULL;
+                uint8_t identity[CN_SHA256_SIZE];
 
+                /* The server may resume earlier than our checkpoint (it never saw
+                   the last ACKs) but never later, and only for the same manifest. */
                 if (cn_decode_resume_ok(resp_payload, (size_t)resp_hdr.payload_length,
                                         &acc_file_idx, &acc_offset, &manifest_data, &manifest_len) != 0 ||
+                    cn_compute_manifest_identity(manifest_data, manifest_len, identity) != 0 ||
+                    memcmp(identity, ckpt.manifest_identity, CN_SHA256_SIZE) != 0 ||
+                    acc_file_idx > ckpt.file_index ||
+                    (acc_file_idx == ckpt.file_index && acc_offset > ckpt.contiguous_offset) ||
                     cn_manifest_parse(manifest_data, manifest_len, &manifest, &reason) != 0) {
                     free(resp_payload);
                     close(socket_fd);
                     status = CN_CLIENT_PROTOCOL;
+                    (void)snprintf(report.message, sizeof(report.message), "invalid RESUME_OK");
                     goto attempt_done;
                 }
                 free(resp_payload);
+
+                /* Never leave a checkpoint that claims more than the server accepted. */
+                if (acc_file_idx != ckpt.file_index || acc_offset != ckpt.contiguous_offset) {
+                    ckpt.file_index = acc_file_idx;
+                    ckpt.contiguous_offset = acc_offset;
+                    (void)cn_checkpoint_save(argv[4], argv[3], &ckpt);
+                }
 
                 if (log != NULL) {
                     fprintf(log, "Resuming topic %s from file %" PRIu32 " offset %" PRIu64 "\n",
@@ -657,8 +703,9 @@ int main(int argc, char **argv)
                 free(resp_payload);
                 close(socket_fd);
                 status = CN_CLIENT_SERVER_ERROR;
-                (void)snprintf(report.message, sizeof(report.message), "server error: %s", err_text);
-                break;
+                (void)snprintf(report.message, sizeof(report.message),
+                               "server error: %.497s", err_text);
+                goto attempt_done;
             }
 
             if (resp_hdr.message_type != CN_MSG_MANIFEST ||

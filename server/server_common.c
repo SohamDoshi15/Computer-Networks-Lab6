@@ -15,7 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -26,6 +28,18 @@ static int compare_names(const void *a, const void *b)
     const struct part1_file *fa = a;
     const struct part1_file *fb = b;
     return strcmp(fa->name, fb->name);
+}
+
+int part1_set_io_timeout(int client_fd, unsigned seconds)
+{
+    struct timeval timeout;
+    timeout.tv_sec = (time_t)seconds;
+    timeout.tv_usec = 0;
+    if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0 ||
+        setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0) {
+        return -1;
+    }
+    return 0;
 }
 
 int part1_validate_topic_name(const char *topic)
@@ -380,6 +394,7 @@ int part1_serve_client_ex(int client_fd, const char *root,
         cn_io_set_counters(&stats->io);
     }
     (void)cn_socket_set_nodelay(client_fd);
+    (void)part1_set_io_timeout(client_fd, CN_SERVER_IO_TIMEOUT_SECONDS);
 
     if (cn_recv_frame(client_fd, &request, &request_payload) != CN_PROTOCOL_OK) goto done;
     (void)clock_gettime(CLOCK_MONOTONIC, &start);

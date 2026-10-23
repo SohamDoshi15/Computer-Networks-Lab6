@@ -36,6 +36,10 @@
 #include <unistd.h>
 
 #define DATA_CHUNK_SIZE (64u * 1024u)
+/* Unacknowledged file bytes allowed in flight: four of the client's default
+   64 KiB checkpoint intervals, so the client never waits on the server. */
+#define ACK_WINDOW_BYTES (256u * 1024u)
+#define ACK_WAIT_MS 500
 
 struct worker_args {
     int client_fd;
@@ -154,8 +158,16 @@ static int serialize_manifest(const struct part1_manifest *manifest,
     return 0;
 }
 
-static void drain_pending_acks(int fd, const uint8_t transfer_id[16])
+/*
+ * Reads every ACK that has already arrived, waiting up to wait_ms for the first
+ * one. Raises *acked to the highest offset acknowledged for file_index and
+ * returns how many ACKs were read.
+ */
+static int drain_pending_acks(int fd, const uint8_t transfer_id[16], uint32_t file_index,
+                              uint64_t *acked, int wait_ms)
 {
+    int count = 0;
+
     for (;;) {
         struct pollfd pfd;
         struct cn_frame_header hdr;
@@ -165,7 +177,7 @@ static void drain_pending_acks(int fd, const uint8_t transfer_id[16])
         pfd.fd = fd;
         pfd.events = POLLIN;
         pfd.revents = 0;
-        ret = poll(&pfd, 1, 0);
+        ret = poll(&pfd, 1, count == 0 ? wait_ms : 0);
         if (ret <= 0 || !(pfd.revents & POLLIN)) {
             break;
         }
@@ -185,15 +197,20 @@ static void drain_pending_acks(int fd, const uint8_t transfer_id[16])
             if (cn_reader_get_u32(&reader, &ack_idx) == 0 &&
                 cn_reader_get_u64(&reader, &ack_off) == 0) {
                 (void)cn_session_store_update_ack(&g_session_store, transfer_id, ack_idx, ack_off);
+                if (ack_idx == file_index && ack_off > *acked) {
+                    *acked = ack_off;
+                }
+                count += 1;
             }
         }
         free(payload);
     }
+    return count;
 }
 
 static int send_file_case2(int fd, int topic_fd, const uint8_t transfer_id[16],
                           uint32_t index, const struct part1_file *file,
-                          uint64_t start_offset,
+                          uint64_t start_offset, uint64_t *window,
                           struct cn_fault_injector *fault,
                           struct cn_serve_stats *stats)
 {
@@ -201,6 +218,7 @@ static int send_file_case2(int fd, int topic_fd, const uint8_t transfer_id[16],
     struct cn_writer writer;
     uint8_t buffer[DATA_CHUNK_SIZE];
     uint64_t offset = start_offset;
+    uint64_t acked = start_offset;
     int input_fd = -1, result = -1;
     struct stat st;
 
@@ -236,7 +254,17 @@ static int send_file_case2(int fd, int topic_fd, const uint8_t transfer_id[16],
         if (got < 0 && errno == EINTR) continue;
         if (got <= 0) goto done;
 
-        drain_pending_acks(fd, transfer_id);
+        /* A resume restarts at the last offset stored here, so every byte in
+           flight beyond the last ACK is resent after a cut. Bound that by not
+           running more than *window bytes ahead of the client's ACKs. */
+        (void)drain_pending_acks(fd, transfer_id, index, &acked, 0);
+        while (offset > acked && offset - acked >= *window) {
+            if (drain_pending_acks(fd, transfer_id, index, &acked, ACK_WAIT_MS) == 0) {
+                /* No ACK in time: this client checkpoints less often than assumed. */
+                if (*window > UINT64_MAX / 2) break;
+                *window *= 2;
+            }
+        }
 
         payload_size = 4 + 8 + 4 + (size_t)got;
         data_payload = malloc(payload_size);
@@ -340,6 +368,7 @@ static int serve_client_case2(int client_fd, const char *root,
     uint8_t transfer_id[CN_TRANSFER_ID_SIZE];
     uint32_t accepted_file_index = 0;
     uint64_t accepted_offset = 0;
+    uint64_t ack_window = ACK_WINDOW_BYTES;
     int root_fd = -1, topic_fd = -1, result = -1;
     char topic[CN_MAX_TOPIC_SIZE + 1] = {0};
     size_t i;
@@ -507,7 +536,7 @@ static int serve_client_case2(int client_fd, const char *root,
     for (i = accepted_file_index; i < manifest.count; ++i) {
         uint64_t start_off = (i == accepted_file_index) ? accepted_offset : 0;
         if (send_file_case2(client_fd, topic_fd, transfer_id, (uint32_t)i,
-                            &manifest.files[i], start_off, fault, stats) != 0) {
+                            &manifest.files[i], start_off, &ack_window, fault, stats) != 0) {
             goto done;
         }
     }

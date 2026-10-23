@@ -145,8 +145,11 @@ static void test_fragmented_receive(void)
     assert(pthread_create(&sender, NULL, send_one_byte_at_a_time, &args) == 0);
     assert(cn_recv_all(sockets[1], actual, sizeof(actual)) == CN_PROTOCOL_OK);
     assert(memcmp(actual, expected, sizeof(expected)) == 0);
-    assert(cn_recv_all(sockets[1], actual, 1) == CN_PROTOCOL_EOF);
+    /* Join first: on macOS, shutdown() of an AF_UNIX socket does not wake a
+       peer already blocked in recv(), so waiting for EOF before the sender
+       has shut down could hang forever. */
     assert(pthread_join(sender, NULL) == 0);
+    assert(cn_recv_all(sockets[1], actual, 1) == CN_PROTOCOL_EOF);
     close(sockets[0]);
     close(sockets[1]);
 }
