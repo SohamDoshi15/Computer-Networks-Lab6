@@ -49,6 +49,29 @@ frame because its stream position can no longer be trusted.
 
 IDs are append-only. Existing numeric values must never be reassigned.
 
+## Sample design key terminology crosswalk
+
+The instructor's sample design uses descriptive names rather than a required
+wire-level enum. The implementation preserves the same semantics with the
+stable messages above. This table makes the correspondence explicit for
+evaluation and viva use.
+
+| Sample key term | Implemented message(s) | Equivalent behavior |
+|---|---|---|
+| `GET` | `GET` | Client requests one topic. |
+| `OK` | `MANIFEST` | Server accepts the topic and returns the ordered file list and metadata. |
+| `START` | `GET` followed by `MANIFEST` | The accepted request starts transfer immediately; a redundant round trip is avoided. |
+| `FILE_HDR` | `FILE_START` | Server identifies the next file, its size, and integrity digest. |
+| `DATA` | `DATA` | Server sends a file chunk with file index, absolute offset, and length. |
+| `ACK` | `ACK` | Client confirms the highest contiguous offset safely persisted. |
+| `CLOSE` | `FILE_END` and `COMPLETE` | Server marks one file complete, then marks the whole topic complete. |
+| `ERR` | `ERROR` | Either peer reports a rejected request or protocol/integrity failure. |
+| Existing session ID in `GET` | `RESUME` and `RESUME_OK` | Client presents durable checkpoint state; server validates and accepts a bounded resume point. |
+
+Enhanced Case 2 adds `ASSIGN_RANGE`, `RANGE_READY`, `ACK_RANGE`, and
+`RANGE_END` to implement the sample key's permitted performance enhancement
+using parallel, non-overlapping byte ranges.
+
 ## Payload formats
 
 The field order below is part of the protocol.
