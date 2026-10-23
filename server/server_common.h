@@ -23,6 +23,16 @@ struct part1_manifest {
     uint64_t total_bytes;
 };
 
+/* Per send/recv limit on client sockets, matching the client's default. */
+#define CN_SERVER_IO_TIMEOUT_SECONDS 30u
+
+/*
+ * Bounds every blocking send and recv on a client socket, so a silent or
+ * stalled client cannot hold a worker thread forever (or, in the
+ * single-threaded server, every other client).
+ */
+int part1_set_io_timeout(int client_fd, unsigned seconds);
+
 int part1_validate_topic_name(const char *topic);
 int part1_build_manifest(const char *root, const char *topic,
                          struct part1_manifest *manifest);

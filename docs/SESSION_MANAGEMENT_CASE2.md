@@ -122,10 +122,12 @@ When receiving `RESUME`, the server validates:
 2. **Session Existence**: Session must exist in `SessionStore` and not be expired.
 3. **Topic Match**: `req.topic` must equal `session->topic`.
 4. **Manifest Identity**: `req.manifest_identity` must equal current topic `manifest_identity`.
-5. **Offset Bounds**: `(req.file_index, req.contiguous_offset)` must not exceed the last acknowledged position stored in `SessionStore`, and must not exceed the target file's size in the manifest.
+5. **Offset Bounds**: The accepted position is the earlier of `(req.file_index, req.contiguous_offset)` and the last acknowledged position stored in `SessionStore`, and must not exceed the target file's size in the manifest. The client writes its checkpoint *before* sending the ACK, so after a cut it is usually ahead of the server; the server then accepts its own stored position instead of rejecting the resume.
 6. **Completed File Digests**: Each entry in `req.completed` must match the manifest's SHA-256 for that `file_index`.
 
-If validation succeeds, the server replies `CN_MSG_RESUME_OK` with the accepted file index and offset, seeks to `accepted_offset` on the server file, and streams only subsequent bytes.
+If validation succeeds, the server replies `CN_MSG_RESUME_OK` with the accepted file index and offset, seeks to `accepted_offset` on the server file, and streams only subsequent bytes. The client rejects a `RESUME_OK` that is later than its checkpoint or carries a different manifest, rewrites its checkpoint to the accepted position, and truncates the partial file to it.
+
+While streaming, the server keeps at most 256 KiB of unacknowledged file data in flight (four default checkpoint intervals) and doubles that window whenever an ACK takes longer than 500 ms, so a client with a longer `CN_CHECKPOINT_BYTES` slows it down only briefly instead of stalling it.
 
 ---
 
@@ -137,7 +139,9 @@ If validation succeeds, the server replies `CN_MSG_RESUME_OK` with the accepted 
 | Session expired (> 120s inactivity) | `ERROR(CN_ERR_RESUME_REJECTED, "session expired")` | Deletes stale checkpoint, generates new transfer ID, falls back to `GET` from beginning |
 | Server process restarted | `ERROR(CN_ERR_RESUME_REJECTED, "session not found")` | In-memory store was reset; client falls back to `GET` from beginning |
 | Server topic files modified | `ERROR(CN_ERR_RESUME_REJECTED, "manifest identity mismatch")` | Topic changed; client falls back to `GET` to download updated topic fresh |
-| Client requests offset > acked | `ERROR(CN_ERR_RESUME_REJECTED, "offset exceeds acked")` | Client falls back to `GET` from beginning |
+| Client checkpoint ahead of the stored ACK | `RESUME_OK` at the stored ACK position | Client truncates to the accepted offset and resumes there |
+| Partial file missing or shorter than the accepted offset | (client side) | Client rewinds its checkpoint to the start of that file and retries `RESUME`; it never zero-fills the gap |
+| SHA-256 mismatch at commit | (client side) | Client deletes the partial file, rewinds the checkpoint to the start of that file, and retries |
 | Invalid topic name | `ERROR(CN_ERR_RESUME_REJECTED, "invalid topic")` | Client exits immediately with error (exit code 2) |
 
 ---
@@ -156,6 +160,8 @@ Let $D$ be total topic data bytes, $p$ be per-connection cut probability, $N$ be
   Completed files and acknowledged chunks are never retransmitted. When a cut occurs between checkpoints, only the uncheckpointed tail $[0, C_{\text{thresh}})$ is resent. On file-boundary cuts, redundant transmission is exactly 0.
   $$\mathbb{E}[\text{Redundant}_{\text{Case2}}] \le (\mathbb{E}[N] - 1) \cdot \frac{C_{\text{thresh}}}{2} = \frac{p}{2(1-p)} \cdot C_{\text{thresh}}$$
   Notice that $\mathbb{E}[\text{Redundant}_{\text{Case2}}]$ is independent of total topic size $D$ and bounded by $C_{\text{thresh}} = 64\text{ KiB}$!
+
+  This bound assumes the server learns about every checkpoint before the cut. In practice, the ACKs for data that was still in flight when the server cut the connection never arrive, so a resume restarts at the server's last stored ACK. Without a limit, the in-flight amount is the kernel socket buffer depth (about 1.4 MB on macOS loopback). The server therefore keeps at most $W = 256\text{ KiB}$ unacknowledged, which bounds the resend per cut to roughly $W + C_{\text{thresh}}$.
 
 ### 6.2 Empirical Measurements
 Measured on `Grande` topic ($D = 3,173,610$ bytes) under identical fault injection ($p = 0.7$, seed 11):

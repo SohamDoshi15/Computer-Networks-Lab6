@@ -372,6 +372,7 @@ int cn_file_sink_open_resume(struct cn_file_sink *sink, int dir_fd,
                              const struct cn_manifest_entry *entry,
                              uint64_t resume_offset)
 {
+    struct stat st;
     int saved_errno;
 
     *sink = (struct cn_file_sink)CN_FILE_SINK_INIT;
@@ -381,9 +382,14 @@ int cn_file_sink_open_resume(struct cn_file_sink *sink, int dir_fd,
     if (sink->temp_name == NULL) {
         return -1;
     }
-    sink->fd = openat(dir_fd, sink->temp_name,
-                      O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0666);
-    if (sink->fd < 0) {
+    /* The bytes before resume_offset must already be on disk. Extending a
+       missing or short partial file would fill that gap with zeros. */
+    sink->fd = openat(dir_fd, sink->temp_name, O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+    if (sink->fd < 0 || fstat(sink->fd, &st) != 0) {
+        goto fail;
+    }
+    if (!S_ISREG(st.st_mode) || (uint64_t)st.st_size < resume_offset) {
+        errno = EINVAL;
         goto fail;
     }
     if (ftruncate(sink->fd, (off_t)resume_offset) != 0) {
@@ -468,6 +474,16 @@ enum cn_client_status cn_file_sink_commit(struct cn_file_sink *sink)
         return CN_CLIENT_LOCAL_IO;
     }
     return CN_CLIENT_OK;
+}
+
+void cn_file_sink_close(struct cn_file_sink *sink)
+{
+    if (sink->fd >= 0) {
+        close(sink->fd);
+        sink->fd = -1;
+    }
+    free(sink->temp_name);
+    sink->temp_name = NULL;
 }
 
 void cn_file_sink_abort(struct cn_file_sink *sink)

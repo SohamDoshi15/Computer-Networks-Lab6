@@ -76,7 +76,8 @@ static int handle_get_request(int client_fd, const struct cn_frame_header *hdr,
     int rc = -1;
 
     cn_reader_init(&reader, payload, (size_t)hdr->payload_length);
-    if (cn_reader_get_string(&reader, topic, sizeof(topic), CN_MAX_TOPIC_SIZE) != 0) {
+    if (cn_reader_get_string(&reader, topic, sizeof(topic), CN_MAX_TOPIC_SIZE) != 0 ||
+        cn_reader_remaining(&reader) != 0) {
         return part1_send_error(client_fd, hdr->transfer_id, CN_ERR_INVALID_REQUEST, "invalid topic");
     }
 
@@ -120,6 +121,8 @@ static int handle_get_request(int client_fd, const struct cn_frame_header *hdr,
 
     cn_compute_manifest_identity(manifest_payload, writer.offset, manifest_identity);
     cn_session_store_create(&g_session_store, transfer_id, topic, manifest_identity);
+    /* Hashing the topic is the expensive part; do it once here, not per range. */
+    (void)cn_session_store_attach_files(&g_session_store, transfer_id, &manifest);
 
     if (send_frame(client_fd, CN_MSG_MANIFEST, transfer_id, manifest_payload, writer.offset) == CN_PROTOCOL_OK) {
         rc = 0;
@@ -135,12 +138,14 @@ static int handle_assign_range(int client_fd, const struct cn_frame_header *hdr,
                                struct cn_fault_injector *fault)
 {
     struct cn_range_assignment req;
-    struct part1_manifest manifest;
     char topic[CN_MAX_TOPIC_SIZE + 1];
+    char *name = NULL;
+    uint64_t size = 0;
     uint8_t ready_buf[CN_RANGE_READY_PAYLOAD_SIZE];
     uint8_t end_buf[CN_RANGE_END_PAYLOAD_SIZE];
     struct cn_range_end end_msg;
-    int topic_fd = -1, file_fd = -1, rc = -1;
+    struct stat st;
+    int root_fd = -1, topic_fd = -1, file_fd = -1, rc = -1;
     uint64_t current_offset;
     uint8_t data_frame_buf[16 + DATA_CHUNK_SIZE];
     struct cn_writer writer;
@@ -149,52 +154,60 @@ static int handle_assign_range(int client_fd, const struct cn_frame_header *hdr,
         return part1_send_error(client_fd, hdr->transfer_id, CN_ERR_INVALID_REQUEST, "invalid range request");
     }
 
-    if (cn_session_store_get_topic(&g_session_store, hdr->transfer_id, topic) != 0) {
+    /* The file list was hashed once for the GET; rehashing the whole topic for
+       every range made a topic of n files cost O(n^2) hashing. */
+    switch (cn_session_store_get_file(&g_session_store, hdr->transfer_id, req.file_index,
+                                      topic, &name, &size)) {
+    case 0:
+        break;
+    case -2:
+        return part1_send_error(client_fd, hdr->transfer_id, CN_ERR_RANGE_REJECTED, "file index out of bounds");
+    case -3:
+        return part1_send_error(client_fd, hdr->transfer_id, CN_ERR_INTERNAL, "out of memory");
+    default:
         return part1_send_error(client_fd, hdr->transfer_id, CN_ERR_RESUME_REJECTED, "session not found");
     }
 
-    if (part1_build_manifest(root, topic, &manifest) != 0) {
-        return part1_send_error(client_fd, hdr->transfer_id, CN_ERR_UNKNOWN_TOPIC, "topic missing");
+    if (req.start_offset >= req.end_offset || req.end_offset > size) {
+        (void)part1_send_error(client_fd, hdr->transfer_id, CN_ERR_RANGE_REJECTED, "invalid range offsets");
+        goto cleanup;
     }
 
-    if (req.file_index >= manifest.count) {
-        part1_free_manifest(&manifest);
-        return part1_send_error(client_fd, hdr->transfer_id, CN_ERR_RANGE_REJECTED, "file index out of bounds");
+    root_fd = open(root, O_RDONLY | O_CLOEXEC | O_DIRECTORY);
+    if (root_fd >= 0) {
+        topic_fd = openat(root_fd, topic, O_RDONLY | O_CLOEXEC | O_DIRECTORY | O_NOFOLLOW);
     }
-
-    const struct part1_file *target = &manifest.files[req.file_index];
-    if (req.start_offset >= req.end_offset || req.end_offset > target->size) {
-        part1_free_manifest(&manifest);
-        return part1_send_error(client_fd, hdr->transfer_id, CN_ERR_RANGE_REJECTED, "invalid range offsets");
+    if (topic_fd >= 0) {
+        file_fd = openat(topic_fd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    }
+    if (file_fd < 0 || fstat(file_fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        (uint64_t)st.st_size != size) {
+        (void)part1_send_error(client_fd, hdr->transfer_id, CN_ERR_FILE_IO,
+                               "file unavailable or changed since the manifest");
+        goto cleanup;
     }
 
     /* Send RANGE_READY */
     if (cn_encode_range_ready(&req, ready_buf) != 0 ||
         send_frame(client_fd, CN_MSG_RANGE_READY, hdr->transfer_id, ready_buf, sizeof(ready_buf)) != CN_PROTOCOL_OK) {
-        part1_free_manifest(&manifest);
-        return -1;
+        goto cleanup;
     }
 
     /* Each range connection gets one deterministic fault decision. */
     (void)cn_fault_plan(fault, req.end_offset - req.start_offset);
-
-    topic_fd = open(manifest.topic_path, O_RDONLY | O_CLOEXEC | O_DIRECTORY);
-    if (topic_fd >= 0) {
-        file_fd = openat(topic_fd, target->name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    }
-    if (file_fd < 0) {
-        if (topic_fd >= 0) close(topic_fd);
-        part1_free_manifest(&manifest);
-        return part1_send_error(client_fd, hdr->transfer_id, CN_ERR_FILE_IO, "failed to open file");
-    }
 
     current_offset = req.start_offset;
     while (current_offset < req.end_offset) {
         uint64_t remaining = req.end_offset - current_offset;
         size_t chunk_len = remaining > DATA_CHUNK_SIZE ? DATA_CHUNK_SIZE : (size_t)remaining;
         ssize_t bytes_read = pread(file_fd, data_frame_buf + 16, chunk_len, (off_t)current_offset);
+        if (bytes_read < 0 && errno == EINTR) {
+            continue;
+        }
         if (bytes_read <= 0) {
-            break;
+            /* Never send RANGE_END for a range that was cut short. */
+            (void)part1_send_error(client_fd, hdr->transfer_id, CN_ERR_FILE_IO, "file read failed");
+            goto cleanup;
         }
 
         cn_writer_init(&writer, data_frame_buf, 16 + (size_t)bytes_read);
@@ -231,7 +244,8 @@ static int handle_assign_range(int client_fd, const struct cn_frame_header *hdr,
 cleanup:
     if (file_fd >= 0) close(file_fd);
     if (topic_fd >= 0) close(topic_fd);
-    part1_free_manifest(&manifest);
+    if (root_fd >= 0) close(root_fd);
+    free(name);
     return rc;
 }
 
@@ -245,6 +259,7 @@ static void *worker_main(void *arg)
     int opt = 1;
 
     setsockopt(args->client_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+    (void)part1_set_io_timeout(args->client_fd, CN_SERVER_IO_TIMEOUT_SECONDS);
     cn_fault_injector_init(&fault, args->fault_config, args->connection_id);
 
     pres = cn_recv_frame(args->client_fd, &hdr, &payload);
@@ -322,8 +337,10 @@ int main(int argc, char **argv)
         socklen_t client_len = sizeof(client_addr);
         int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
         if (client_fd < 0) {
+            /* ECONNABORTED or EMFILE must not take the whole server down. */
             if (errno == EINTR) continue;
-            break;
+            perror("accept");
+            continue;
         }
 
         struct worker_args *wargs = malloc(sizeof(*wargs));

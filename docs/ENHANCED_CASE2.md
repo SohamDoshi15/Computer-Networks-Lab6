@@ -79,7 +79,8 @@ sequenceDiagram
 
 ### 3.1 Server Architecture (`server/server_enhanced.c`)
 - **Connection Multiplexing**: Listens on the designated TCP port and spawns a thread per connection.
-- **Session Association**: Uses the 16-byte `transfer_id` carried in each frame header to link worker connections to active topic manifests in `SessionStore`.
+- **Session Association**: Uses the 16-byte `transfer_id` carried in each frame header to link worker connections to active topic manifests in `SessionStore`. The file list hashed for the `GET` is kept in the session, so an `ASSIGN_RANGE` only looks up the file's name and size and checks that the size has not changed; it never rescans or rehashes the topic.
+- **Short Reads**: If the file cannot be read to the end of the range, the server sends `ERROR(CN_ERR_FILE_IO)` instead of a `RANGE_END` for a range it did not finish.
 - **Fault Injection**: Per-connection or per-chunk fault injection (`cn_fault_plan_connection`) operates at the range level, randomly interrupting active streams to stress client recovery.
 - **Range Bounds Enforcement**: Validates that $0 \le start\_offset < end\_offset \le \text{file\_size}$. Range requests with invalid offsets or out-of-bound file indices are rejected with `CN_ERR_RANGE_REJECTED`.
 
@@ -87,7 +88,8 @@ sequenceDiagram
 - **Range Task Queue**: All file slices are placed into a synchronized `range_task` linked list guarded by a `pthread_mutex_t`.
 - **Worker Thread Pool**: Spawns $N$ pthreads. Each thread dequeues an unfinished range, connects to the server, and pulls data.
 - **Atomic Concurrency via `pwrite()`**: Because ranges are strictly non-overlapping, multiple threads can write into different offsets of the same file concurrently without locking during I/O.
-- **Resilient Range Loop**: If an error or EOF occurs before `RANGE_END`, the thread updates `current_offset`, re-establishes TCP connection, and requests only the remaining delta without discarding previously written bytes.
+- **Resilient Range Loop**: If an error or EOF occurs before `RANGE_END`, the thread updates `current_offset`, re-establishes TCP connection, and requests only the remaining delta without discarding previously written bytes. After a cut it reconnects at once. If the server cannot be reached it backs off from 50 ms up to 2 s, and gives up (exit 3) once a range has made no progress for 30 s. An `ERROR` from the server, such as an expired session after a server restart, ends the transfer at once (exit 2) instead of retrying forever.
+- **Bounded Resources**: Every connection uses 30 s send/receive timeouts, and each worker opens a `.part` file only while it downloads one of its ranges, so a topic with thousands of files needs only $N$ file descriptors. `RANGE_READY` and `RANGE_END` must echo the assigned range exactly.
 
 ---
 
